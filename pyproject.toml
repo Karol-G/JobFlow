@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jobflow"
+description = "JobFlow is a lightweight, programmable system for generating, distributing, and executing jobs on batch-scheduled clusters."
+readme = "README.md"
+requires-python = ">= 3.10"
+license = { text = "MIT" }
+authors = [{ name = "Karol Gotkowski", email = "karol.gotkowski@dkfz.de" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Operating System :: OS Independent",
+]
+keywords = ["copier", "template", "python"]
+dependencies = []
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.0",
+  "pytest>=7.0",
+  "twine>=4.0",
+  "setuptools_scm[toml]>=8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Karol-G/jobflow"
+Source = "https://github.com/Karol-G/jobflow"
+Issues = "https://github.com/Karol-G/jobflow/issues"
+
+[tool.setuptools]
+package-dir = { "" = "." }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["jobflow*"]
+
+[tool.setuptools_scm]
+fallback_version = "0.0.0"
+local_scheme = "node-and-date"
