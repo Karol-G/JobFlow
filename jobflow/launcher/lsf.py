@@ -42,7 +42,8 @@ class LsfLauncher(Launcher):
             env_value = "all" if not env_pairs else f"all,{env_pairs}"
             # Use bash positional parameters so worker_command arguments are not shell-reparsed.
             # This avoids JSON quoting issues for --program-args in LSF command wrapping.
-            bash_script = 'if [ -n "$1" ]; then . "$1"; shift; fi; exec "$@"'
+            # Always consume the env-script placeholder ($1), even when empty.
+            bash_script = 'env_script="$1"; shift; if [ "${env_script#~/}" != "$env_script" ]; then env_script="$HOME/${env_script#~/}"; fi; if [ -n "$env_script" ]; then . "$env_script"; fi; exec "$@"'
             bsub_cmd = [
                 "bsub",
                 "-q",

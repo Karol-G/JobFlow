@@ -718,7 +718,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lsf-queue", default="long")
     parser.add_argument("--lsf-nproc", type=int, default=10)
     parser.add_argument("--lsf-mem", default="20GB")
-    parser.add_argument("--lsf-env-script", default="")
+    parser.add_argument("--lsf-env-script", default="~/start_nnunetv2.sh")
     parser.add_argument("--log-level", default="INFO")
     return parser
 
