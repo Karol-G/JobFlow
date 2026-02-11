@@ -48,6 +48,8 @@ Implement `jobflow.program.TaskProgram`:
 
 Load with:
 - `--program module.path:ClassName`
+- `--program /abs/or/rel/path/to/program.py:ClassName`
+- `--program /abs/or/rel/path/to/program.py` (only if file defines exactly one `TaskProgram` class)
 - `--program-args '{"key":"value"}'`
 
 Task IDs should be deterministic to keep retries/idempotency consistent.
