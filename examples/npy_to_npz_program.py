@@ -15,8 +15,8 @@ if __package__ in {None, ""}:
 
 from jobflow.models import TaskDefinition
 from jobflow.program import ProgressCallback, TaskProgram
-from jobflow.manager import Manager
 from jobflow import generate_task_id
+from jobflow.manager import Manager, build_parser as build_manager_parser
 
 
 class NpyToNpzProgram(TaskProgram):
@@ -98,7 +98,7 @@ def _create_demo_arrays(input_dir: Path, count: int, seed: int) -> int:
     return count
 
 
-def _run_demo() -> int:
+def _run_demo(*, launcher: str) -> int:
     try:
         import numpy as np  # noqa: F401  # type: ignore
     except Exception:
@@ -122,31 +122,24 @@ def _run_demo() -> int:
             "output_dir": str(output_dir),
             "glob": "*.npy",
         }
-        manager_args = argparse.Namespace(
-            mode="fs",
-            bind_host="0.0.0.0",
-            port=5555,
-            manager_host=None,
-            shared_dir=str(shared_dir),
-            session_id=session_id,
-            lease_duration=60,
-            heartbeat_interval=2,
-            worker_timeout=20,
-            db_path=str(db_path),
-            program="npy_to_npz_program:NpyToNpzProgram",
-            program_args=json.dumps(program_args, sort_keys=True),
-            enable_launcher="multiprocess",
-            launch_stale_timeout=21600,
-            launch_poll_interval=60,
-            worker_count_on_start=3,
-            shutdown_grace_period=20,
-            worker_manager_timeout_minutes=1.0,
-            log_level="INFO",
-            dashboard="on"
-        )
+        manager_cli_args = [
+            "--db-path",
+            str(db_path),
+            "--program",
+            "examples.npy_to_npz_program:NpyToNpzProgram",
+            "--program-args",
+            json.dumps(program_args, sort_keys=True),
+            "--shared-dir",
+            str(shared_dir),
+            "--session-id",
+            session_id,
+            "--enable-launcher",
+            launcher,
+        ]
+        manager_args = build_manager_parser().parse_args(manager_cli_args)
 
         manager = Manager(manager_args)
-        print("Starting manager with multiprocess launcher (in-process)...")
+        print(f"Starting manager with launcher='{launcher}' (in-process)...")
         try:
             summary = manager.run()
             succeeded = summary.get("SUCCEEDED", 0)
@@ -169,7 +162,10 @@ def _run_demo() -> int:
 
 
 def main() -> int:
-    return _run_demo()
+    parser = argparse.ArgumentParser(description="Run NpyToNpzProgram demo.")
+    parser.add_argument("--launcher", choices=["multiprocess", "lsf"], default="multiprocess")
+    args = parser.parse_args()
+    return _run_demo(launcher=args.launcher)
 
 
 if __name__ == "__main__":
