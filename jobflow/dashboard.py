@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 import time
 from collections import deque
@@ -48,6 +49,7 @@ class ManagerDashboard:
         self.refresh_s = max(0.1, float(refresh_s))
         self.log_lines = max(50, int(log_lines))
         self.console = Console()
+        self._manager_pid = os.getpid()
         self._log_handler = _RingLogHandler(max_lines=self.log_lines)
         self._log_handler.setFormatter(
             logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s")
@@ -169,6 +171,11 @@ class ManagerDashboard:
             f"Workers total: {worker_total}",
             f"Workers alive: {worker_alive}",
             f"Workers offline: {worker_counts.get('OFFLINE', 0)}",
+        )
+        stats.add_row(
+            f"Manager PID: {self._manager_pid}",
+            "",
+            "",
         )
         stats.add_row(
             f"Idle: {worker_counts.get('IDLE', 0)}",
