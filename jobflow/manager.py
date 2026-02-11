@@ -708,7 +708,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--worker-timeout", "-t", type=int, default=60)
     parser.add_argument("--shutdown-grace-period", type=int, default=60)
     parser.add_argument("--worker-manager-timeout-minutes", type=float, default=3.0)
-    parser.add_argument("--db-path", "-d", required=True)
+    parser.add_argument("--db-path", "-d", default="jobflow_manager.db")
     parser.add_argument("--program", "-P", required=True)
     parser.add_argument("--program-args", "-A", default="{}")
     parser.add_argument("--enable-launcher", choices=["none", "multiprocess", "lsf", "slurm"], default="multiprocess")
