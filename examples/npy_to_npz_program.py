@@ -4,8 +4,8 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sys
-import tempfile
 import uuid
 from pathlib import Path
 from typing import Iterable
@@ -105,15 +105,16 @@ def _run_demo() -> int:
         print("This demo requires numpy installed.", file=sys.stderr)
         return 2
 
-    with tempfile.TemporaryDirectory(prefix="jobflow_npz_demo_") as tmp_root_raw:
-        tmp_root = Path(tmp_root_raw)
+    tmp_root = Path.cwd() / f"jobflow_npz_demo_{uuid.uuid4().hex[:10]}"
+    tmp_root.mkdir(parents=True, exist_ok=False)
+    try:
         input_dir = tmp_root / "input"
         output_dir = tmp_root / "output"
         shared_dir = tmp_root / "shared"
         db_path = tmp_root / "manager.db"
         session_id = f"demo-{uuid.uuid4().hex[:8]}"
 
-        num_tasks = _create_demo_arrays(input_dir, count=6, seed=42)
+        num_tasks = _create_demo_arrays(input_dir, count=60, seed=42)
         print(f"Created {num_tasks} input arrays in {input_dir}")
 
         program_args = {
@@ -141,6 +142,7 @@ def _run_demo() -> int:
             shutdown_grace_period=20,
             worker_manager_timeout_minutes=1.0,
             log_level="INFO",
+            dashboard="on"
         )
 
         manager = Manager(manager_args)
@@ -160,8 +162,10 @@ def _run_demo() -> int:
             print(f"Demo failed: {exc}", file=sys.stderr)
             return_code = 1
 
-        print(f"Temporary files cleaned up from {tmp_root}")
         return return_code
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        print(f"Deleted demo directory: {tmp_root}")
 
 
 def main() -> int:
