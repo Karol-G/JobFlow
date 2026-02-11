@@ -37,6 +37,8 @@ Project modules
 - `jobflow/worker.py`
 - `examples/npy_to_npz_program.py`
   - Demo converts `.npy` inputs to compressed `.npz` outputs.
+- `examples/data_storage_to_mla_program.py`
+  - Converts data storage volumes into `.mla` outputs (requires `medvol` and `mlarray`).
 
 TaskProgram API
 ---------------
@@ -49,6 +51,10 @@ Load with:
 - `--program-args '{"key":"value"}'`
 
 Task IDs should be deterministic to keep retries/idempotency consistent.
+
+Additional example program:
+- `--program examples.data_storage_to_mla_program:DataStorageToMlaProgram`
+- `--program-args '{"json_path":"/path/id_storage_paths.json","data_storage_base":"/path/data_storage","output_dir":"/path/mlarray","max_images":50000}'`
 
 Local demo (filesystem mode)
 ----------------------------
