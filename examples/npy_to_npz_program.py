@@ -1,14 +1,12 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
-import signal
 import sqlite3
-import subprocess
 import sys
 import tempfile
-import time
 import uuid
 from pathlib import Path
 from typing import Iterable
@@ -19,6 +17,8 @@ if __package__ in {None, ""}:
 
 from jobflow.models import TaskDefinition
 from jobflow.program import ProgressCallback, TaskProgram
+from jobflow.manager import Manager
+from jobflow.launcher.multiprocess import MultiprocessLauncher
 
 
 class NpyToNpzProgram(TaskProgram):
@@ -100,29 +100,22 @@ def _create_demo_arrays(input_dir: Path, count: int, seed: int) -> int:
     return count
 
 
-def _wait_for_terminal_tasks(db_path: Path, expected_tasks: int, timeout_s: float) -> dict[str, int]:
-    deadline = time.time() + timeout_s
+def _cancel_multiprocess_workers(db_path: Path, launcher: object) -> None:
+    if not isinstance(launcher, MultiprocessLauncher):
+        return
+    if not db_path.exists():
+        return
 
-    while time.time() < deadline:
-        if not db_path.exists():
-            time.sleep(0.2)
-            continue
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(
+            "SELECT batch_job_id FROM launches WHERE system = 'multiprocess' AND batch_job_id IS NOT NULL"
+        ).fetchall()
+    finally:
+        conn.close()
 
-        conn = sqlite3.connect(str(db_path))
-        try:
-            total = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
-            terminal = conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE state IN ('SUCCEEDED', 'FAILED', 'CANCELED')"
-            ).fetchone()[0]
-            if total >= expected_tasks and terminal == total:
-                rows = conn.execute("SELECT state, COUNT(*) FROM tasks GROUP BY state").fetchall()
-                return {state: count for state, count in rows}
-        finally:
-            conn.close()
-
-        time.sleep(0.3)
-
-    raise TimeoutError(f"Timed out waiting for {expected_tasks} tasks to finish")
+    for (batch_job_id,) in rows:
+        launcher.cancel(str(batch_job_id))
 
 
 def _run_demo() -> int:
@@ -131,8 +124,6 @@ def _run_demo() -> int:
     except Exception:
         print("This demo requires numpy installed.", file=sys.stderr)
         return 2
-
-    repo_root = Path(__file__).resolve().parents[1]
 
     with tempfile.TemporaryDirectory(prefix="jobflow_npz_demo_") as tmp_root_raw:
         tmp_root = Path(tmp_root_raw)
@@ -150,41 +141,33 @@ def _run_demo() -> int:
             "output_dir": str(output_dir),
             "glob": "*.npy",
         }
-        manager_cmd = [
-            sys.executable,
-            "-m",
-            "jobflow.manager",
-            "--mode",
-            "fs",
-            "--shared-dir",
-            str(shared_dir),
-            "--session-id",
-            session_id,
-            "--db-path",
-            str(db_path),
-            "--program",
-            "examples.npy_to_npz_program:NpyToNpzProgram",
-            "--program-args",
-            json.dumps(program_args, sort_keys=True),
-            "--enable-launcher",
-            "multiprocess",
-            "--worker-count-on-start",
-            "3",
-            "--heartbeat-interval",
-            "2",
-            "--worker-timeout",
-            "20",
-            "--lease-duration",
-            "60",
-            "--log-level",
-            "INFO",
-        ]
+        manager_args = argparse.Namespace(
+            mode="fs",
+            bind_host="0.0.0.0",
+            port=5555,
+            manager_host=None,
+            shared_dir=str(shared_dir),
+            session_id=session_id,
+            lease_duration=60,
+            heartbeat_interval=2,
+            worker_timeout=20,
+            db_path=str(db_path),
+            program="examples.npy_to_npz_program:NpyToNpzProgram",
+            program_args=json.dumps(program_args, sort_keys=True),
+            enable_launcher="multiprocess",
+            launch_stale_timeout=21600,
+            launch_poll_interval=60,
+            worker_count_on_start=3,
+            log_level="INFO",
+        )
 
-        print("Starting manager with multiprocess launcher...")
-        manager_proc = subprocess.Popen(manager_cmd, cwd=str(repo_root), start_new_session=True)
-
+        manager = Manager(manager_args)
+        print("Starting manager with multiprocess launcher (in-process)...")
         try:
-            summary = _wait_for_terminal_tasks(db_path, expected_tasks=num_tasks, timeout_s=120.0)
+            summary = manager.run()
+            succeeded = summary.get("SUCCEEDED", 0)
+            if succeeded != num_tasks:
+                raise RuntimeError(f"Expected {num_tasks} succeeded tasks, got summary={summary}")
             out_files = sorted(output_dir.rglob("*.npz"))
             print(f"Task summary: {summary}")
             print(f"Output files: {len(out_files)}")
@@ -195,18 +178,7 @@ def _run_demo() -> int:
             print(f"Demo failed: {exc}", file=sys.stderr)
             return_code = 1
         finally:
-            try:
-                os.killpg(manager_proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                manager_proc.wait(timeout=10.0)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(manager_proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                manager_proc.wait(timeout=5.0)
+            _cancel_multiprocess_workers(db_path, manager.launcher)
 
         print(f"Temporary files cleaned up from {tmp_root}")
         return return_code
