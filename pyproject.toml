@@ -29,6 +29,9 @@ dev = [
   "setuptools_scm[toml]>=8.0",
 ]
 
+[project.scripts]
+jobflow = "jobflow.manager:main"
+
 [project.urls]
 Homepage = "https://github.com/Karol-G/jobflow"
 Source = "https://github.com/Karol-G/jobflow"
