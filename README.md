@@ -126,9 +126,11 @@ Optional launcher modules:
 - LSF: `jobflow.launcher.lsf.LsfLauncher`
 - SLURM: `jobflow.launcher.slurm.SlurmLauncher`
 
-Manager can submit workers at startup:
+Manager can maintain a target worker pool:
 - `--enable-launcher {multiprocess|lsf|slurm}`
-- `--worker-count-on-start N`
+- `--workers N` (default `10`)
+  - Manager keeps this target by submitting replacements when workers go offline.
+  - Reconciliation happens only while non-terminal tasks remain.
 - LSF launcher options:
   - `--lsf-queue` (default `long`)
   - `--lsf-nproc` (default `10`)

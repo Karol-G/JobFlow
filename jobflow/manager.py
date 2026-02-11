@@ -138,10 +138,8 @@ class Manager:
         counts = self.store.task_counts()
         logger.info("Loaded tasks: inserted=%s existing=%s state_counts=%s", inserted, existing, counts)
 
-    def maybe_submit_workers_on_start(self) -> None:
-        if not self.launcher:
-            return
-        if self.args.worker_count_on_start <= 0:
+    def _submit_workers(self, count: int) -> None:
+        if not self.launcher or count <= 0:
             return
 
         worker_command = self._build_worker_command()
@@ -156,7 +154,7 @@ class Manager:
                     "lsf_env_script": self.args.lsf_env_script,
                 }
             )
-        records = self.launcher.submit_workers(self.args.worker_count_on_start, worker_command, env, requested)
+        records = self.launcher.submit_workers(count, worker_command, env, requested)
 
         for rec in records:
             self.store.upsert_launch(
@@ -173,6 +171,41 @@ class Manager:
                 rec.batch_job_id,
                 rec.state.value,
             )
+
+    def _has_remaining_tasks(self) -> bool:
+        counts = self.store.task_counts()
+        total = sum(counts.values())
+        terminal = (
+            counts.get(TaskState.SUCCEEDED.value, 0)
+            + counts.get(TaskState.FAILED.value, 0)
+            + counts.get(TaskState.CANCELED.value, 0)
+        )
+        return total > 0 and terminal < total
+
+    def _reconcile_worker_pool(self) -> None:
+        if self.launcher is None or self._shutdown_started:
+            return
+        target = max(0, int(self.args.workers))
+        if target <= 0:
+            return
+        if not self._has_remaining_tasks():
+            return
+
+        online_workers = self.store.count_non_offline_workers()
+        pending_launches = self.store.count_pending_launches()
+        in_pool = online_workers + pending_launches
+        missing = target - in_pool
+        if missing <= 0:
+            return
+
+        logger.info(
+            "Worker pool below target: target=%s online=%s pending_launches=%s; submitting %s workers",
+            target,
+            online_workers,
+            pending_launches,
+            missing,
+        )
+        self._submit_workers(missing)
 
     def _build_worker_command(self) -> list[str]:
         cmd = [
@@ -206,7 +239,7 @@ class Manager:
             if self.dashboard:
                 self.dashboard.start()
             self.bootstrap_tasks()
-            self.maybe_submit_workers_on_start()
+            self._reconcile_worker_pool()
             self._refresh_dashboard(force=True)
 
             while self.running:
@@ -294,6 +327,7 @@ class Manager:
                     self.store.set_worker_state(worker_id, WorkerState.IDLE, current_lease_id=None)
 
         self._tick_launchers(now)
+        self._reconcile_worker_pool()
         self._maybe_start_shutdown(now)
         self._check_shutdown_progress(now)
 
@@ -680,7 +714,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enable-launcher", choices=["none", "multiprocess", "lsf", "slurm"], default="multiprocess")
     parser.add_argument("--launch-stale-timeout", type=int, default=21600)
     parser.add_argument("--launch-poll-interval", type=int, default=30)
-    parser.add_argument("--worker-count-on-start", type=int, default=10)
+    parser.add_argument("--workers", type=int, default=10)
     parser.add_argument("--lsf-queue", default="long")
     parser.add_argument("--lsf-nproc", type=int, default=10)
     parser.add_argument("--lsf-mem", default="20GB")

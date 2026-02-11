@@ -298,6 +298,13 @@ class Store:
             (WorkerState.OFFLINE.value,),
         ).fetchall()
 
+    def count_non_offline_workers(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM workers WHERE state != ?",
+            (WorkerState.OFFLINE.value,),
+        ).fetchone()
+        return int(row["c"]) if row is not None else 0
+
     def upsert_launch(
         self,
         launch_id: str,
@@ -370,6 +377,13 @@ class Store:
             "SELECT * FROM launches WHERE batch_job_id IS NOT NULL AND state NOT IN (?, ?)",
             (LaunchState.FAILED.value, LaunchState.CANCELED.value),
         ).fetchall()
+
+    def count_pending_launches(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM launches WHERE state IN (?, ?, ?)",
+            (LaunchState.SUBMITTED.value, LaunchState.PENDING.value, LaunchState.RUNNING.value),
+        ).fetchone()
+        return int(row["c"]) if row is not None else 0
 
     def launch_counts(self) -> dict[str, int]:
         rows = self.conn.execute("SELECT state, COUNT(*) as c FROM launches GROUP BY state").fetchall()
