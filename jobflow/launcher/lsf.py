@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import shlex
 import subprocess
 import time
 import uuid
@@ -35,12 +34,15 @@ class LsfLauncher(Launcher):
         queue = str(requested.get("lsf_queue", "long"))
         nproc = int(requested.get("lsf_nproc", 10))
         mem = str(requested.get("lsf_mem", "20GB"))
+        env_script = str(requested.get("lsf_env_script", "")).strip()
 
         for _ in range(count):
             launch_id = str(uuid.uuid4())
-            cmd_str = shlex.join(worker_command)
             env_pairs = ",".join(f"{k}={v}" for k, v in env.items())
             env_value = "all" if not env_pairs else f"all,{env_pairs}"
+            # Use bash positional parameters so worker_command arguments are not shell-reparsed.
+            # This avoids JSON quoting issues for --program-args in LSF command wrapping.
+            bash_script = 'if [ -n "$1" ]; then . "$1"; shift; fi; exec "$@"'
             bsub_cmd = [
                 "bsub",
                 "-q",
@@ -54,8 +56,12 @@ class LsfLauncher(Launcher):
                 "/bin/bash",
                 "-l",
                 "-c",
-                cmd_str,
+                bash_script,
+                "jobflow-worker",
+                env_script,
+                *worker_command,
             ]
+            logger.debug("Submitting LSF worker command: %s", bsub_cmd)
             try:
                 cp = subprocess.run(bsub_cmd, check=True, capture_output=True, text=True)
                 batch_job_id = _parse_lsf_job_id(cp.stdout)

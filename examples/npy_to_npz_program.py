@@ -135,6 +135,8 @@ def _run_demo(*, launcher: str) -> int:
             session_id,
             "--enable-launcher",
             launcher,
+            "--lsf-env-script",
+            "~/start_nnunetv2.sh"
         ]
         manager_args = build_manager_parser().parse_args(manager_cli_args)
 

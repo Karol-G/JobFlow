@@ -133,6 +133,7 @@ Manager can submit workers at startup:
   - `--lsf-queue` (default `long`)
   - `--lsf-nproc` (default `10`)
   - `--lsf-mem` (default `20GB`)
+  - `--lsf-env-script` (default empty): prepends `. <script>;` before the worker command in `bash -c`.
 - `--shutdown-grace-period SECONDS` for worker shutdown handshake before forced cancel.
 - `--worker-manager-timeout-minutes MINUTES` forwarded to launched workers.
 - `--dashboard {auto|on|off}` live full-screen manager dashboard (auto enables on TTY).

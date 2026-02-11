@@ -153,6 +153,7 @@ class Manager:
                     "lsf_queue": self.args.lsf_queue,
                     "lsf_nproc": self.args.lsf_nproc,
                     "lsf_mem": self.args.lsf_mem,
+                    "lsf_env_script": self.args.lsf_env_script,
                 }
             )
         records = self.launcher.submit_workers(self.args.worker_count_on_start, worker_command, env, requested)
@@ -683,6 +684,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lsf-queue", default="long")
     parser.add_argument("--lsf-nproc", type=int, default=10)
     parser.add_argument("--lsf-mem", default="20GB")
+    parser.add_argument("--lsf-env-script", default="")
     parser.add_argument("--log-level", default="INFO")
     return parser
 
