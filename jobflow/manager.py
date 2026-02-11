@@ -141,21 +141,26 @@ class Manager:
 
         return cmd
 
-    def run(self) -> None:
+    def run(self) -> dict[str, int]:
         self.bootstrap_tasks()
         self.maybe_submit_workers_on_start()
 
-        while self.running:
-            for msg in self.transport.poll(0.5):
-                self._handle_incoming(msg)
+        try:
+            while self.running:
+                for msg in self.transport.poll(0.5):
+                    self._handle_incoming(msg)
 
-            now = time.time()
-            if now - self._last_tick >= 1.0:
-                self._timer_tick(now)
-                self._last_tick = now
+                now = time.time()
+                if now - self._last_tick >= 1.0:
+                    self._timer_tick(now)
+                    self._last_tick = now
 
-        self.transport.close()
-        self.store.close()
+            summary = self.store.task_counts()
+            logger.info("Manager exiting with task summary: %s", summary)
+            return summary
+        finally:
+            self.transport.close()
+            self.store.close()
 
     def _timer_tick(self, now: float) -> None:
         cutoff = now - self.worker_timeout_s
