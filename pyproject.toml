@@ -15,7 +15,10 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 keywords = ["copier", "template", "python"]
-dependencies = []
+dependencies = [
+  "pyzmq>=25",
+  "rich>=13.7",
+]
 dynamic = ["version"]
 
 [project.optional-dependencies]
@@ -24,12 +27,6 @@ dev = [
   "pytest>=7.0",
   "twine>=4.0",
   "setuptools_scm[toml]>=8.0",
-]
-zmq = [
-  "pyzmq>=25",
-]
-dashboard = [
-  "rich>=13.7",
 ]
 
 [project.urls]
