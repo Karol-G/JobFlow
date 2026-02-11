@@ -34,7 +34,7 @@ class Manager:
         self.store = Store(Path(args.db_path))
         self.scheduler = FifoScheduler()
         self.transport = self._make_transport(args)
-        self.launcher = self._make_launcher(args.enable_launcher)
+        self.launcher = self._make_launcher(args.launcher)
         self.running = True
 
         self.lease_duration_s = int(args.lease_duration)
@@ -145,7 +145,7 @@ class Manager:
         worker_command = self._build_worker_command()
         env = {}
         requested = {"worker_command": worker_command, "mode": self.args.mode}
-        if self.args.enable_launcher == "lsf":
+        if self.args.launcher == "lsf":
             requested.update(
                 {
                     "lsf_queue": self.args.lsf_queue,
@@ -711,7 +711,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db-path", "-d", default="jobflow_manager.db")
     parser.add_argument("--program", "-P", required=True)
     parser.add_argument("--program-args", "-A", default="{}")
-    parser.add_argument("--enable-launcher", choices=["none", "multiprocess", "lsf", "slurm"], default="multiprocess")
+    parser.add_argument("--launcher", choices=["none", "multiprocess", "lsf", "slurm"], default="multiprocess")
     parser.add_argument("--launch-stale-timeout", type=int, default=21600)
     parser.add_argument("--launch-poll-interval", type=int, default=30)
     parser.add_argument("--workers", type=int, default=10)

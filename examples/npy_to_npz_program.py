@@ -133,7 +133,7 @@ def _run_demo(*, launcher: str) -> int:
             str(shared_dir),
             "--session-id",
             session_id,
-            "--enable-launcher",
+            "--launcher",
             launcher,
             "--lsf-env-script",
             "~/start_nnunetv2.sh"

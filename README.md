@@ -135,7 +135,7 @@ Optional launcher modules:
 - SLURM: `jobflow.launcher.slurm.SlurmLauncher`
 
 Manager can maintain a target worker pool:
-- `--enable-launcher {multiprocess|lsf|slurm}`
+- `--launcher {multiprocess|lsf|slurm}`
 - `--workers N` (default `10`)
   - Manager keeps this target by submitting replacements when workers go offline.
   - Reconciliation happens only while non-terminal tasks remain.
