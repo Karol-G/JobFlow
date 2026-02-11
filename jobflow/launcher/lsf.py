@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 import subprocess
 import time
 import uuid
@@ -31,12 +32,30 @@ class LsfLauncher(Launcher):
     ) -> list[LaunchRecord]:
         records: list[LaunchRecord] = []
         now = time.time()
+        queue = str(requested.get("lsf_queue", "long"))
+        nproc = int(requested.get("lsf_nproc", 10))
+        mem = str(requested.get("lsf_mem", "20GB"))
+
         for _ in range(count):
             launch_id = str(uuid.uuid4())
-            cmd_str = " ".join(worker_command)
+            cmd_str = shlex.join(worker_command)
             env_pairs = ",".join(f"{k}={v}" for k, v in env.items())
             env_value = "all" if not env_pairs else f"all,{env_pairs}"
-            bsub_cmd = ["bsub", "-env", env_value, cmd_str]
+            bsub_cmd = [
+                "bsub",
+                "-q",
+                queue,
+                "-n",
+                str(nproc),
+                "-R",
+                f"rusage[mem={mem}]",
+                "-env",
+                env_value,
+                "/bin/bash",
+                "-l",
+                "-c",
+                cmd_str,
+            ]
             try:
                 cp = subprocess.run(bsub_cmd, check=True, capture_output=True, text=True)
                 batch_job_id = _parse_lsf_job_id(cp.stdout)

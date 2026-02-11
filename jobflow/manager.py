@@ -147,6 +147,14 @@ class Manager:
         worker_command = self._build_worker_command()
         env = {}
         requested = {"worker_command": worker_command, "mode": self.args.mode}
+        if self.args.enable_launcher == "lsf":
+            requested.update(
+                {
+                    "lsf_queue": self.args.lsf_queue,
+                    "lsf_nproc": self.args.lsf_nproc,
+                    "lsf_mem": self.args.lsf_mem,
+                }
+            )
         records = self.launcher.submit_workers(self.args.worker_count_on_start, worker_command, env, requested)
 
         for rec in records:
@@ -672,6 +680,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--launch-stale-timeout", type=int, default=21600)
     parser.add_argument("--launch-poll-interval", type=int, default=30)
     parser.add_argument("--worker-count-on-start", type=int, default=10)
+    parser.add_argument("--lsf-queue", default="long")
+    parser.add_argument("--lsf-nproc", type=int, default=10)
+    parser.add_argument("--lsf-mem", default="20GB")
     parser.add_argument("--log-level", default="INFO")
     return parser
 
