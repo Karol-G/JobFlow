@@ -133,7 +133,7 @@ def _run_demo() -> int:
             heartbeat_interval=2,
             worker_timeout=20,
             db_path=str(db_path),
-            program="examples.npy_to_npz_program:NpyToNpzProgram",
+            program="npy_to_npz_program:NpyToNpzProgram",
             program_args=json.dumps(program_args, sort_keys=True),
             enable_launcher="multiprocess",
             launch_stale_timeout=21600,
