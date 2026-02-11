@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 class Manager:
     def __init__(self, args: argparse.Namespace) -> None:
+        self._normalize_args(args)
         self.args = args
         self.store = Store(Path(args.db_path))
         self.scheduler = FifoScheduler()
@@ -51,6 +52,13 @@ class Manager:
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
 
+    def _normalize_args(self, args: argparse.Namespace) -> None:
+        if args.mode == "fs":
+            if not args.shared_dir:
+                args.shared_dir = str(Path.cwd())
+            if not args.session_id:
+                args.session_id = "jobflow-session"
+
     def _handle_signal(self, signum: int, _frame: object) -> None:
         logger.info("Received signal %s, stopping manager", signum)
         self.running = False
@@ -59,8 +67,6 @@ class Manager:
         if args.mode == "zmq":
             return make_manager_transport(bind_host=args.bind_host, port=args.port)
         if args.mode == "fs":
-            if not args.shared_dir or not args.session_id:
-                raise ValueError("--shared-dir and --session-id are required in fs mode")
             return FsTransport(base_dir=Path(args.shared_dir), session_id=args.session_id, endpoint_id="manager")
         raise ValueError(f"Unsupported mode: {args.mode}")
 
@@ -586,24 +592,24 @@ def _parse_json_dict(raw: str) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="JobFlow manager process")
-    parser.add_argument("--mode", "-m", choices=["zmq", "fs"], required=True)
+    parser.add_argument("--mode", "-m", choices=["zmq", "fs"], default="fs")
     parser.add_argument("--bind-host", default="0.0.0.0")
     parser.add_argument("--port", "-p", type=int, default=5555)
     parser.add_argument("--manager-host", default=None)
     parser.add_argument("--shared-dir", "-s", default=None)
-    parser.add_argument("--session-id", default=None)
-    parser.add_argument("--lease-duration", "-l", type=int, default=120)
+    parser.add_argument("--session-id", default="jobflow-session")
+    parser.add_argument("--lease-duration", "-l", type=int, default=1800)
     parser.add_argument("--heartbeat-interval", "-i", type=int, default=10)
-    parser.add_argument("--worker-timeout", "-t", type=int, default=30)
-    parser.add_argument("--shutdown-grace-period", type=int, default=30)
-    parser.add_argument("--worker-manager-timeout-minutes", type=float, default=5.0)
+    parser.add_argument("--worker-timeout", "-t", type=int, default=60)
+    parser.add_argument("--shutdown-grace-period", type=int, default=60)
+    parser.add_argument("--worker-manager-timeout-minutes", type=float, default=3.0)
     parser.add_argument("--db-path", "-d", required=True)
     parser.add_argument("--program", "-P", required=True)
     parser.add_argument("--program-args", "-A", default="{}")
-    parser.add_argument("--enable-launcher", choices=["none", "multiprocess", "lsf", "slurm"], default="none")
+    parser.add_argument("--enable-launcher", choices=["none", "multiprocess", "lsf", "slurm"], default="multiprocess")
     parser.add_argument("--launch-stale-timeout", type=int, default=21600)
-    parser.add_argument("--launch-poll-interval", type=int, default=60)
-    parser.add_argument("--worker-count-on-start", type=int, default=0)
+    parser.add_argument("--launch-poll-interval", type=int, default=30)
+    parser.add_argument("--worker-count-on-start", type=int, default=10)
     parser.add_argument("--log-level", default="INFO")
     return parser
 

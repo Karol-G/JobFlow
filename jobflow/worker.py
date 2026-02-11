@@ -368,11 +368,11 @@ def _parse_json_dict(raw: str) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="JobFlow worker process")
-    parser.add_argument("--mode", "-m", choices=["zmq", "fs"], required=True)
+    parser.add_argument("--mode", "-m", choices=["zmq", "fs"], default="fs")
     parser.add_argument("--manager-host", default=None)
     parser.add_argument("--port", "-p", type=int, default=5555)
-    parser.add_argument("--shared-dir", "-s", default=None)
-    parser.add_argument("--session-id", default=None)
+    parser.add_argument("--shared-dir", "-s", default=str(Path.cwd()))
+    parser.add_argument("--session-id", default="jobflow-session")
     parser.add_argument("--worker-id", "-w", default=None)
     parser.add_argument("--launch-id", default=None)
     parser.add_argument("--batch-job-id", default=None)
