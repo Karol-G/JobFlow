@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 import os
-import sqlite3
 import sys
 import tempfile
 import uuid
@@ -18,7 +17,6 @@ if __package__ in {None, ""}:
 from jobflow.models import TaskDefinition
 from jobflow.program import ProgressCallback, TaskProgram
 from jobflow.manager import Manager
-from jobflow.launcher.multiprocess import MultiprocessLauncher
 
 
 class NpyToNpzProgram(TaskProgram):
@@ -100,24 +98,6 @@ def _create_demo_arrays(input_dir: Path, count: int, seed: int) -> int:
     return count
 
 
-def _cancel_multiprocess_workers(db_path: Path, launcher: object) -> None:
-    if not isinstance(launcher, MultiprocessLauncher):
-        return
-    if not db_path.exists():
-        return
-
-    conn = sqlite3.connect(str(db_path))
-    try:
-        rows = conn.execute(
-            "SELECT batch_job_id FROM launches WHERE system = 'multiprocess' AND batch_job_id IS NOT NULL"
-        ).fetchall()
-    finally:
-        conn.close()
-
-    for (batch_job_id,) in rows:
-        launcher.cancel(str(batch_job_id))
-
-
 def _run_demo() -> int:
     try:
         import numpy as np  # noqa: F401  # type: ignore
@@ -158,6 +138,8 @@ def _run_demo() -> int:
             launch_stale_timeout=21600,
             launch_poll_interval=60,
             worker_count_on_start=3,
+            shutdown_grace_period=20,
+            worker_manager_timeout_minutes=1.0,
             log_level="INFO",
         )
 
@@ -177,8 +159,6 @@ def _run_demo() -> int:
         except Exception as exc:
             print(f"Demo failed: {exc}", file=sys.stderr)
             return_code = 1
-        finally:
-            _cancel_multiprocess_workers(db_path, manager.launcher)
 
         print(f"Temporary files cleaned up from {tmp_root}")
         return return_code

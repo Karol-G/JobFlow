@@ -37,10 +37,16 @@ class Manager:
         self.lease_duration_s = int(args.lease_duration)
         self.heartbeat_interval_s = int(args.heartbeat_interval)
         self.worker_timeout_s = int(args.worker_timeout)
+        self.shutdown_grace_period_s = int(args.shutdown_grace_period)
         self.max_inflight_per_worker = 1
 
         self._last_tick = time.time()
         self._last_launch_poll = 0.0
+        self._shutdown_started = False
+        self._shutdown_deadline_ts: Optional[float] = None
+        self._pending_shutdown_acks: set[str] = set()
+        self._shutdown_launches_canceled = False
+        self._last_shutdown_broadcast_ts = 0.0
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -131,6 +137,8 @@ class Manager:
             self.args.log_level,
             "--port",
             str(self.args.port),
+            "--manager-timeout-minutes",
+            str(self.args.worker_manager_timeout_minutes),
         ]
 
         if self.args.mode == "zmq":
@@ -212,15 +220,89 @@ class Manager:
                     self.store.set_worker_state(worker_id, WorkerState.IDLE, current_lease_id=None)
 
         self._tick_launchers(now)
-        self._maybe_stop_when_all_succeeded()
+        self._maybe_start_shutdown(now)
+        self._check_shutdown_progress(now)
 
-    def _maybe_stop_when_all_succeeded(self) -> None:
+    def _maybe_start_shutdown(self, now: float) -> None:
+        if self._shutdown_started:
+            return
+        if not self._all_tasks_terminal():
+            return
+
+        self._shutdown_started = True
+        self._shutdown_deadline_ts = now + self.shutdown_grace_period_s
+
+        workers = self.store.list_non_offline_workers()
+        self._pending_shutdown_acks = {row["worker_id"] for row in workers}
+        logger.info(
+            "All tasks terminal; initiating shutdown handshake with %s workers",
+            len(self._pending_shutdown_acks),
+        )
+
+        for worker_id in self._pending_shutdown_acks:
+            self.store.set_worker_state(worker_id, WorkerState.DRAINING)
+        self._broadcast_shutdown_to_pending(now)
+
+    def _all_tasks_terminal(self) -> bool:
         counts = self.store.task_counts()
         total = sum(counts.values())
-        succeeded = counts.get(TaskState.SUCCEEDED.value, 0)
-        if total > 0 and succeeded == total:
-            logger.info("All tasks succeeded; stopping manager.")
+        terminal = (
+            counts.get(TaskState.SUCCEEDED.value, 0)
+            + counts.get(TaskState.FAILED.value, 0)
+            + counts.get(TaskState.CANCELED.value, 0)
+        )
+        return total > 0 and terminal == total
+
+    def _broadcast_shutdown_to_pending(self, now: float) -> None:
+        if not self._pending_shutdown_acks:
+            return
+        for worker_id in self._pending_shutdown_acks:
+            self._send_to_worker(worker_id, "Shutdown", {"graceful": True})
+        self._last_shutdown_broadcast_ts = now
+
+    def _check_shutdown_progress(self, now: float) -> None:
+        if not self._shutdown_started:
+            return
+
+        for worker_id in list(self._pending_shutdown_acks):
+            worker = self.store.get_worker(worker_id)
+            if worker is None or worker["state"] == WorkerState.OFFLINE.value:
+                self._pending_shutdown_acks.discard(worker_id)
+
+        if not self._pending_shutdown_acks:
+            logger.info("All workers shutdown acknowledged or offline.")
+            self._force_cancel_remaining_launches()
             self.running = False
+            return
+
+        if now - self._last_shutdown_broadcast_ts >= 2.0:
+            self._broadcast_shutdown_to_pending(now)
+
+        if self._shutdown_deadline_ts is not None and now >= self._shutdown_deadline_ts:
+            logger.warning(
+                "Shutdown grace period expired with %s pending worker acks; forcing launch cancel",
+                len(self._pending_shutdown_acks),
+            )
+            self._force_cancel_remaining_launches()
+            self.running = False
+
+    def _force_cancel_remaining_launches(self) -> None:
+        if self._shutdown_launches_canceled:
+            return
+        self._shutdown_launches_canceled = True
+        if self.launcher is None:
+            return
+
+        for row in self.store.list_launches_for_cancel():
+            batch_job_id = row["batch_job_id"]
+            if not batch_job_id:
+                continue
+            launch_id = row["launch_id"]
+            try:
+                self.launcher.cancel(str(batch_job_id))
+                self.store.mark_launch_state(launch_id, LaunchState.CANCELED)
+            except Exception:
+                logger.exception("Failed canceling launched worker batch_job_id=%s launch_id=%s", batch_job_id, launch_id)
 
     def _tick_launchers(self, now: float) -> None:
         if self.launcher and now - self._last_launch_poll >= self.args.launch_poll_interval:
@@ -277,6 +359,8 @@ class Manager:
             self._on_task_finished(src_id, payload)
         elif msg_type == "TaskFailed":
             self._on_task_failed(src_id, payload)
+        elif msg_type == "ShutdownAck":
+            self._on_shutdown_ack(src_id, payload)
         else:
             logger.warning("Unknown worker message type: %s", msg_type)
 
@@ -290,6 +374,17 @@ class Manager:
             payload=payload,
         )
         self.transport.send(worker_id, msg)
+
+    def _send_welcome(self, worker_id: str) -> None:
+        self._send_to_worker(
+            worker_id,
+            "Welcome",
+            {
+                "heartbeat_interval_s": self.heartbeat_interval_s,
+                "lease_duration_s": self.lease_duration_s,
+                "max_inflight_per_worker": self.max_inflight_per_worker,
+            },
+        )
 
     def _on_register(self, worker_id: str, payload: dict) -> None:
         now = time.time()
@@ -318,23 +413,28 @@ class Manager:
             batch_job_id=batch_job_id if isinstance(batch_job_id, str) else None,
             launch_id=linked_launch_id,
         )
-
-        self._send_to_worker(
-            worker_id,
-            "Welcome",
-            {
-                "heartbeat_interval_s": self.heartbeat_interval_s,
-                "lease_duration_s": self.lease_duration_s,
-                "max_inflight_per_worker": self.max_inflight_per_worker,
-            },
-        )
+        if self._shutdown_started:
+            self.store.set_worker_state(worker_id, WorkerState.DRAINING)
+            self._pending_shutdown_acks.add(worker_id)
+            self._send_to_worker(worker_id, "Shutdown", {"graceful": True})
+        else:
+            self._send_welcome(worker_id)
         logger.info("Worker registered: %s launch_id=%s batch_job_id=%s", worker_id, linked_launch_id, batch_job_id)
 
     def _on_heartbeat(self, worker_id: str, payload: dict) -> None:
         lease_id = payload.get("current_lease_id") if isinstance(payload.get("current_lease_id"), str) else None
         self.store.update_worker_heartbeat(worker_id, time.time(), lease_id)
+        if self._shutdown_started:
+            self._send_to_worker(worker_id, "Shutdown", {"graceful": True})
+        else:
+            # Heartbeat reply lets workers detect manager liveness.
+            self._send_welcome(worker_id)
 
     def _on_request_work(self, worker_id: str) -> None:
+        if self._shutdown_started:
+            self._send_to_worker(worker_id, "Shutdown", {"graceful": True})
+            return
+
         worker = self.store.get_worker(worker_id)
         if worker is None:
             logger.warning("RequestWork from unknown worker: %s", worker_id)
@@ -418,6 +518,8 @@ class Manager:
             finished_ts=time.time(),
         )
         self.store.set_worker_state(worker_id, WorkerState.IDLE, current_lease_id=None)
+        if self._shutdown_started:
+            self._send_to_worker(worker_id, "Shutdown", {"graceful": True})
         logger.info("Task succeeded task=%s worker=%s", task_id, worker_id)
 
     def _on_task_failed(self, worker_id: str, payload: dict) -> None:
@@ -461,6 +563,15 @@ class Manager:
             logger.error("Task failed permanently task=%s", task_id)
 
         self.store.set_worker_state(worker_id, WorkerState.IDLE, current_lease_id=None)
+        if self._shutdown_started:
+            self._send_to_worker(worker_id, "Shutdown", {"graceful": True})
+
+    def _on_shutdown_ack(self, worker_id: str, payload: dict) -> None:
+        reason = payload.get("reason")
+        self._pending_shutdown_acks.discard(worker_id)
+        self.store.mark_worker_offline(worker_id)
+        logger.info("Received ShutdownAck from worker=%s reason=%s", worker_id, reason)
+        self._check_shutdown_progress(time.time())
 
 
 def _parse_json_dict(raw: str) -> dict:
@@ -484,6 +595,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lease-duration", "-l", type=int, default=120)
     parser.add_argument("--heartbeat-interval", "-i", type=int, default=10)
     parser.add_argument("--worker-timeout", "-t", type=int, default=30)
+    parser.add_argument("--shutdown-grace-period", type=int, default=30)
+    parser.add_argument("--worker-manager-timeout-minutes", type=float, default=5.0)
     parser.add_argument("--db-path", "-d", required=True)
     parser.add_argument("--program", "-P", required=True)
     parser.add_argument("--program-args", "-A", default="{}")

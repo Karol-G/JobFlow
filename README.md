@@ -127,6 +127,8 @@ Optional launcher modules:
 Manager can submit workers at startup:
 - `--enable-launcher {multiprocess|lsf|slurm}`
 - `--worker-count-on-start N`
+- `--shutdown-grace-period SECONDS` for worker shutdown handshake before forced cancel.
+- `--worker-manager-timeout-minutes MINUTES` forwarded to launched workers.
 
 Implementation notes
 --------------------
@@ -134,3 +136,4 @@ Implementation notes
 - Unknown or invalid message direction/types are logged and ignored.
 - Dedup persisted in SQLite `processed_messages`.
 - Lease expiration triggers requeue until retries are exhausted.
+- Manager shutdown flow: detect terminal tasks, send `Shutdown`, wait for `ShutdownAck` or timeout, then cancel remaining launches as fallback.

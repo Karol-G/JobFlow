@@ -15,6 +15,7 @@ WORKER_TO_MANAGER_TYPES = {
     "TaskProgress",
     "TaskFinished",
     "TaskFailed",
+    "ShutdownAck",
 }
 
 MANAGER_TO_WORKER_TYPES = {

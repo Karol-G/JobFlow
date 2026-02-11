@@ -288,6 +288,12 @@ class Store:
     def get_worker(self, worker_id: str) -> Optional[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM workers WHERE worker_id = ?", (worker_id,)).fetchone()
 
+    def list_non_offline_workers(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM workers WHERE state != ?",
+            (WorkerState.OFFLINE.value,),
+        ).fetchall()
+
     def upsert_launch(
         self,
         launch_id: str,
@@ -353,4 +359,10 @@ class Store:
         return self.conn.execute(
             "SELECT * FROM launches WHERE batch_job_id IS NOT NULL AND state NOT IN (?, ?, ?)",
             (LaunchState.ONLINE.value, LaunchState.FAILED.value, LaunchState.CANCELED.value),
+        ).fetchall()
+
+    def list_launches_for_cancel(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM launches WHERE batch_job_id IS NOT NULL AND state NOT IN (?, ?)",
+            (LaunchState.FAILED.value, LaunchState.CANCELED.value),
         ).fetchall()

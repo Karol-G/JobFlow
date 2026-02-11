@@ -57,9 +57,12 @@ class Worker:
         self.heartbeat_interval_s = int(args.heartbeat_interval) if args.heartbeat_interval is not None else 10
         self.lease_duration_s = 120
         self.request_interval_s = 2.0
+        self.manager_timeout_s = float(args.manager_timeout_minutes) * 60.0
 
         self._last_heartbeat = 0.0
         self._last_request = 0.0
+        self._last_manager_message_ts = time.time()
+        self._shutdown_ack_pending = False
         self._dedup = DedupCache()
 
         self._events: queue.Queue[dict] = queue.Queue()
@@ -99,7 +102,18 @@ class Worker:
             self._process_events()
             self._poll_messages()
 
+            if now - self._last_manager_message_ts >= self.manager_timeout_s:
+                logger.error(
+                    "No manager messages for %.1f seconds; worker will exit to avoid dangling.",
+                    self.manager_timeout_s,
+                )
+                self.running = False
+                break
+
             if self.shutdown_requested and self.current_assignment is None:
+                if self._shutdown_ack_pending:
+                    self._send_shutdown_ack("graceful_complete")
+                    self._shutdown_ack_pending = False
                 break
 
         self.transport.close()
@@ -140,6 +154,9 @@ class Worker:
             payload["current_lease_id"] = self.current_assignment["lease_id"]
         self._send("Heartbeat", payload)
 
+    def _send_shutdown_ack(self, reason: str) -> None:
+        self._send("ShutdownAck", {"reason": reason})
+
     def _poll_messages(self) -> None:
         for msg in self.transport.poll(0.2):
             self._handle_message(msg)
@@ -163,6 +180,7 @@ class Worker:
         if not validate_type_for_direction(msg):
             logger.warning("Ignoring invalid manager message msg_id=%s type=%s", msg.get("msg_id"), msg.get("type"))
             return
+        self._last_manager_message_ts = time.time()
 
         if not self._dedup.check_and_add(msg["msg_id"]):
             logger.debug("Duplicate manager message ignored msg_id=%s", msg["msg_id"])
@@ -232,7 +250,9 @@ class Worker:
         graceful = bool(payload.get("graceful", True))
         if graceful and self.current_assignment is not None:
             self.shutdown_requested = True
+            self._shutdown_ack_pending = True
             return
+        self._send_shutdown_ack("shutdown_requested")
         self.running = False
 
     def _run_task(self, assignment: dict) -> None:
@@ -359,6 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--program", "-P", required=True)
     parser.add_argument("--program-args", "-A", default="{}")
     parser.add_argument("--heartbeat-interval", "-i", type=int, default=None)
+    parser.add_argument("--manager-timeout-minutes", type=float, default=5.0)
     parser.add_argument("--log-level", default="INFO")
     return parser
 
