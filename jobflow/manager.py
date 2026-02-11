@@ -121,9 +121,12 @@ class Manager:
     def bootstrap_tasks(self) -> None:
         program_args = _parse_json_dict(self.args.program_args)
         program = load_program(self.args.program, program_args)
+        logger.info("Starting task generation with program=%s", self.args.program)
+        self._refresh_dashboard(force=True)
 
         inserted = 0
         existing = 0
+        last_ui_refresh_ts = time.time()
         for task_def in program.generate_tasks():
             status = self.store.upsert_task(task_def.task_id, task_def.spec, task_def.max_retries)
             if status == "inserted":
@@ -134,9 +137,14 @@ class Manager:
                 logger.info("Task %s already terminal in DB; skipping", task_def.task_id)
             else:
                 existing += 1
+            now = time.time()
+            if now - last_ui_refresh_ts >= self.dashboard_refresh_s:
+                self._refresh_dashboard(now=now, force=True)
+                last_ui_refresh_ts = now
 
         counts = self.store.task_counts()
-        logger.info("Loaded tasks: inserted=%s existing=%s state_counts=%s", inserted, existing, counts)
+        logger.info("Task generation completed: inserted=%s existing=%s state_counts=%s", inserted, existing, counts)
+        self._refresh_dashboard(force=True)
 
     def _submit_workers(self, count: int) -> None:
         if not self.launcher or count <= 0:
@@ -154,23 +162,28 @@ class Manager:
                     "lsf_env_script": self.args.lsf_env_script,
                 }
             )
-        records = self.launcher.submit_workers(count, worker_command, env, requested)
-
-        for rec in records:
-            self.store.upsert_launch(
-                rec.launch_id,
-                system=rec.system,
-                state=rec.state,
-                requested=requested,
-                batch_job_id=rec.batch_job_id,
-                worker_id_expected=rec.worker_id_expected,
-            )
-            logger.info(
-                "Launch submitted launch_id=%s batch_job_id=%s state=%s",
-                rec.launch_id,
-                rec.batch_job_id,
-                rec.state.value,
-            )
+        batch_size = 10
+        remaining = int(count)
+        while remaining > 0:
+            this_batch = min(batch_size, remaining)
+            records = self.launcher.submit_workers(this_batch, worker_command, env, requested)
+            for rec in records:
+                self.store.upsert_launch(
+                    rec.launch_id,
+                    system=rec.system,
+                    state=rec.state,
+                    requested=requested,
+                    batch_job_id=rec.batch_job_id,
+                    worker_id_expected=rec.worker_id_expected,
+                )
+                logger.info(
+                    "Launch submitted launch_id=%s batch_job_id=%s state=%s",
+                    rec.launch_id,
+                    rec.batch_job_id,
+                    rec.state.value,
+                )
+            remaining -= this_batch
+            self._refresh_dashboard(force=True)
 
     def _has_remaining_tasks(self) -> bool:
         counts = self.store.task_counts()
@@ -238,6 +251,7 @@ class Manager:
         try:
             if self.dashboard:
                 self.dashboard.start()
+            self._refresh_dashboard(force=True)
             self.bootstrap_tasks()
             self._reconcile_worker_pool()
             self._refresh_dashboard(force=True)

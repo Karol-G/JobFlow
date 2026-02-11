@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+import time
 from collections import deque
 from typing import Optional
 
@@ -51,6 +52,7 @@ class ManagerDashboard:
         self._log_handler.setFormatter(
             logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s")
         )
+        self._started_ts: Optional[float] = None
         self._live = Live(self._render({}, {}, {}, False, 0), console=self.console, screen=True, auto_refresh=False)
         self._started = False
         self._orig_handlers: list[logging.Handler] = []
@@ -67,6 +69,7 @@ class ManagerDashboard:
         root.addHandler(self._log_handler)
 
         try:
+            self._started_ts = time.time()
             self._live.start()
         except Exception:
             root.removeHandler(self._log_handler)
@@ -135,10 +138,21 @@ class ManagerDashboard:
         )
 
         pct = (100.0 * (succeeded + failed) / total_tasks) if total_tasks > 0 else 0.0
+        done = succeeded + failed
+        now_ts = time.time()
+        elapsed_s = max(0.0, now_ts - (self._started_ts or now_ts))
+        eta_s: Optional[float] = None
+        if total_tasks > 0 and done > 0 and elapsed_s > 0:
+            rate = done / elapsed_s
+            if rate > 0:
+                eta_s = max(0.0, (total_tasks - done) / rate)
+
+        elapsed_txt = _format_duration(elapsed_s)
+        eta_txt = _format_duration(eta_s) if eta_s is not None else "?"
         progress_lines = Group(
             bar,
             Text(
-                f"done={succeeded + failed}/{total_tasks} ({pct:.1f}%) "
+                f"done={done}/{total_tasks} ({pct:.1f}%, {elapsed_txt}<{eta_txt}) "
                 f"succeeded={succeeded} failed={failed} in_progress={in_progress} other={other}",
                 style="bold",
             ),
@@ -222,3 +236,12 @@ def _stacked_bar(*, width: int, values: list[tuple[str, int]], total: int) -> Te
     if len(text.plain) < width:
         text.append("█" * (width - len(text.plain)), style="grey35")
     return text
+
+
+def _format_duration(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "?"
+    whole = max(0, int(seconds))
+    hours, rem = divmod(whole, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
