@@ -207,6 +207,15 @@ class Manager:
                     self.store.set_worker_state(worker_id, WorkerState.IDLE, current_lease_id=None)
 
         self._tick_launchers(now)
+        self._maybe_stop_when_all_succeeded()
+
+    def _maybe_stop_when_all_succeeded(self) -> None:
+        counts = self.store.task_counts()
+        total = sum(counts.values())
+        succeeded = counts.get(TaskState.SUCCEEDED.value, 0)
+        if total > 0 and succeeded == total:
+            logger.info("All tasks succeeded; stopping manager.")
+            self.running = False
 
     def _tick_launchers(self, now: float) -> None:
         if self.launcher and now - self._last_launch_poll >= self.args.launch_poll_interval:
