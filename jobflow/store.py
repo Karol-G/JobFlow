@@ -149,6 +149,10 @@ class Store:
         rows = self.conn.execute("SELECT state, COUNT(*) as c FROM tasks GROUP BY state").fetchall()
         return {row["state"]: row["c"] for row in rows}
 
+    def worker_counts(self) -> dict[str, int]:
+        rows = self.conn.execute("SELECT state, COUNT(*) as c FROM workers GROUP BY state").fetchall()
+        return {row["state"]: row["c"] for row in rows}
+
     def set_task_state(
         self,
         task_id: str,
@@ -366,3 +370,7 @@ class Store:
             "SELECT * FROM launches WHERE batch_job_id IS NOT NULL AND state NOT IN (?, ?)",
             (LaunchState.FAILED.value, LaunchState.CANCELED.value),
         ).fetchall()
+
+    def launch_counts(self) -> dict[str, int]:
+        rows = self.conn.execute("SELECT state, COUNT(*) as c FROM launches GROUP BY state").fetchall()
+        return {row["state"]: row["c"] for row in rows}

@@ -16,6 +16,8 @@ Requirements
 ------------
 - Python 3.10+
 - Optional: `pyzmq` for `--mode zmq`
+- Optional: `rich` for live manager dashboard (`--dashboard auto|on|off`)
+- Install optional dashboard dependency with: `pip install .[dashboard]`
 
 Project modules
 ---------------
@@ -129,6 +131,8 @@ Manager can submit workers at startup:
 - `--worker-count-on-start N`
 - `--shutdown-grace-period SECONDS` for worker shutdown handshake before forced cancel.
 - `--worker-manager-timeout-minutes MINUTES` forwarded to launched workers.
+- `--dashboard {auto|on|off}` live full-screen manager dashboard (auto enables on TTY).
+- `--dashboard-refresh SECONDS` and `--dashboard-log-lines N` tune dashboard updates/log buffer.
 
 Implementation notes
 --------------------
@@ -137,3 +141,4 @@ Implementation notes
 - Dedup persisted in SQLite `processed_messages`.
 - Lease expiration triggers requeue until retries are exhausted.
 - Manager shutdown flow: detect terminal tasks, send `Shutdown`, wait for `ShutdownAck` or timeout, then cancel remaining launches as fallback.
+- Dashboard mode: full-screen view with color progress bar, worker/task stats, and live manager log tail.

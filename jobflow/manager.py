@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .dashboard import ManagerDashboard, RICH_AVAILABLE
 from .launcher.base import Launcher
 from .launcher.lsf import LsfLauncher
 from .launcher.multiprocess import MultiprocessLauncher
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 class Manager:
     def __init__(self, args: argparse.Namespace) -> None:
         self._normalize_args(args)
+        self._apply_log_level(args.log_level)
         self.args = args
         self.store = Store(Path(args.db_path))
         self.scheduler = FifoScheduler()
@@ -48,11 +50,24 @@ class Manager:
         self._pending_shutdown_acks: set[str] = set()
         self._shutdown_launches_canceled = False
         self._last_shutdown_broadcast_ts = 0.0
+        self._last_dashboard_refresh_ts = 0.0
+        self.dashboard: Optional[ManagerDashboard] = self._make_dashboard(args)
+        self.dashboard_refresh_s = float(args.dashboard_refresh)
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
 
+    def _apply_log_level(self, raw_level: str) -> None:
+        level = getattr(logging, str(raw_level).upper(), logging.INFO)
+        logging.getLogger().setLevel(level)
+
     def _normalize_args(self, args: argparse.Namespace) -> None:
+        if not hasattr(args, "dashboard"):
+            args.dashboard = "auto"
+        if not hasattr(args, "dashboard_refresh"):
+            args.dashboard_refresh = 0.5
+        if not hasattr(args, "dashboard_log_lines"):
+            args.dashboard_log_lines = 500
         if args.mode == "fs":
             if not args.shared_dir:
                 args.shared_dir = str(Path.cwd())
@@ -80,6 +95,28 @@ class Manager:
         if mode == "slurm":
             return SlurmLauncher()
         raise ValueError(f"Unsupported launcher: {mode}")
+
+    def _make_dashboard(self, args: argparse.Namespace) -> Optional[ManagerDashboard]:
+        mode = args.dashboard
+        if mode not in {"auto", "on", "off"}:
+            raise ValueError("--dashboard must be one of: auto, on, off")
+        if mode == "off":
+            return None
+
+        tty_ok = bool(sys.stdout.isatty() and sys.stderr.isatty())
+        if mode == "auto" and not tty_ok:
+            return None
+        if not RICH_AVAILABLE:
+            if mode == "on":
+                raise RuntimeError("Dashboard requested but 'rich' is not installed.")
+            return None
+        if mode == "on" and not tty_ok:
+            raise RuntimeError("Dashboard requires an interactive TTY.")
+
+        return ManagerDashboard(
+            refresh_s=float(args.dashboard_refresh),
+            log_lines=int(args.dashboard_log_lines),
+        )
 
     def bootstrap_tasks(self) -> None:
         program_args = _parse_json_dict(self.args.program_args)
@@ -156,10 +193,13 @@ class Manager:
         return cmd
 
     def run(self) -> dict[str, int]:
-        self.bootstrap_tasks()
-        self.maybe_submit_workers_on_start()
-
         try:
+            if self.dashboard:
+                self.dashboard.start()
+            self.bootstrap_tasks()
+            self.maybe_submit_workers_on_start()
+            self._refresh_dashboard(force=True)
+
             while self.running:
                 for msg in self.transport.poll(0.5):
                     self._handle_incoming(msg)
@@ -168,13 +208,32 @@ class Manager:
                 if now - self._last_tick >= 1.0:
                     self._timer_tick(now)
                     self._last_tick = now
+                self._refresh_dashboard(now=now)
 
             summary = self.store.task_counts()
+            self._refresh_dashboard(force=True)
             logger.info("Manager exiting with task summary: %s", summary)
             return summary
         finally:
+            if self.dashboard:
+                self.dashboard.stop()
             self.transport.close()
             self.store.close()
+
+    def _refresh_dashboard(self, *, now: Optional[float] = None, force: bool = False) -> None:
+        if self.dashboard is None:
+            return
+        ts = now if now is not None else time.time()
+        if not force and ts - self._last_dashboard_refresh_ts < self.dashboard_refresh_s:
+            return
+        self._last_dashboard_refresh_ts = ts
+        self.dashboard.update(
+            task_counts=self.store.task_counts(),
+            worker_counts=self.store.worker_counts(),
+            launch_counts=self.store.launch_counts(),
+            shutdown_started=self._shutdown_started,
+            pending_shutdown_acks=len(self._pending_shutdown_acks),
+        )
 
     def _timer_tick(self, now: float) -> None:
         cutoff = now - self.worker_timeout_s
@@ -593,6 +652,9 @@ def _parse_json_dict(raw: str) -> dict:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="JobFlow manager process")
     parser.add_argument("--mode", "-m", choices=["zmq", "fs"], default="fs")
+    parser.add_argument("--dashboard", choices=["auto", "on", "off"], default="auto")
+    parser.add_argument("--dashboard-refresh", type=float, default=0.5)
+    parser.add_argument("--dashboard-log-lines", type=int, default=500)
     parser.add_argument("--bind-host", default="0.0.0.0")
     parser.add_argument("--port", "-p", type=int, default=5555)
     parser.add_argument("--manager-host", default=None)

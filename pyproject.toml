@@ -28,6 +28,9 @@ dev = [
 zmq = [
   "pyzmq>=25",
 ]
+dashboard = [
+  "rich>=13.7",
+]
 
 [project.urls]
 Homepage = "https://github.com/Karol-G/jobflow"
