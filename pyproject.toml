@@ -25,6 +25,9 @@ dev = [
   "twine>=4.0",
   "setuptools_scm[toml]>=8.0",
 ]
+zmq = [
+  "pyzmq>=25",
+]
 
 [project.urls]
 Homepage = "https://github.com/Karol-G/jobflow"

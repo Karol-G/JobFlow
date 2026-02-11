@@ -1,37 +1,136 @@
-JobFlow
-=======
+JobFlow v1 Manager/Worker Coordinator
+=====================================
 
-![PyPI](https://img.shields.io/pypi/v/jobflow?logo=pypi&color=brightgreen)
-![Python Version](https://img.shields.io/pypi/pyversions/jobflow?logo=python)
-![Tests](https://img.shields.io/github/actions/workflow/status/Karol-G/jobflow/workflow.yml?branch=main&logo=github)
-![Copier Template](https://img.shields.io/badge/copier-template-blue?logo=jinja)
-![License](https://img.shields.io/github/license/Karol-G/jobflow)
+JobFlow provides a programmable distributed task coordinator for SLURM/LSF-style clusters.
 
-JobFlow is a lightweight, programmable system for generating, distributing, and executing jobs on batch-scheduled clusters.
+Key points:
+- Pull-based scheduling: workers request work when idle.
+- At-least-once delivery with message deduplication by `msg_id`.
+- Lease + heartbeat based failure handling and task requeue.
+- Two transport modes:
+  - ZeroMQ (`ROUTER` manager, `DEALER` workers) with optional `pyzmq`.
+  - Filesystem queue transport over shared storage.
+- Delayed worker launch support with separate `LaunchRecord` vs connected `Worker`.
 
-## Installation
+Requirements
+------------
+- Python 3.10+
+- Optional: `pyzmq` for `--mode zmq`
 
-You can install jobflow via [pip](https://pypi.org/project/jobflow/):
+Project modules
+---------------
+- `jobflow/models.py`
+- `jobflow/program.py`
+- `jobflow/messages.py`
+- `jobflow/transport/base.py`
+- `jobflow/transport/zmq_transport.py`
+- `jobflow/transport/fs_transport.py`
+- `jobflow/store.py`
+- `jobflow/scheduler.py`
+- `jobflow/launcher/base.py`
+- `jobflow/launcher/lsf.py`
+- `jobflow/launcher/multiprocess.py`
+- `jobflow/launcher/slurm.py`
+- `jobflow/manager.py`
+- `jobflow/worker.py`
+- `examples/npy_to_npz_program.py`
+  - Demo converts `.npy` inputs to compressed `.npz` outputs.
+
+TaskProgram API
+---------------
+Implement `jobflow.program.TaskProgram`:
+- `generate_tasks()` runs on manager startup once.
+- `execute_task(spec, progress_cb)` runs on workers per assignment.
+
+Load with:
+- `--program module.path:ClassName`
+- `--program-args '{"key":"value"}'`
+
+Task IDs should be deterministic to keep retries/idempotency consistent.
+
+Local demo (filesystem mode)
+----------------------------
+From repository root:
+
+1. Create demo inputs (optional, if you have numpy):
 ```bash
-pip install jobflow
+python - <<'PY'
+from pathlib import Path
+import numpy as np
+p = Path("/tmp/jobflow_demo/in")
+p.mkdir(parents=True, exist_ok=True)
+for i in range(8):
+    np.save(p / f"arr_{i}.npy", np.arange(1024) + i)
+print("created", p)
+PY
 ```
 
-## Usage
-
-```python
-from jobflow import __version__
-
-print(__version__)
+2. Start manager:
+```bash
+python -m jobflow.manager \
+  --mode fs \
+  --shared-dir /tmp/jobflow_shared \
+  --session-id demo1 \
+  --db-path /tmp/jobflow_demo/manager.db \
+  --program examples.npy_to_npz_program:NpyToNpzProgram \
+  --program-args '{"input_dir":"/tmp/jobflow_demo/in","output_dir":"/tmp/jobflow_demo/out","glob":"*.npy"}'
 ```
 
-## Contributing
+3. Start workers (separate shells):
+```bash
+python -m jobflow.worker \
+  --mode fs \
+  --shared-dir /tmp/jobflow_shared \
+  --session-id demo1 \
+  --program examples.npy_to_npz_program:NpyToNpzProgram \
+  --program-args '{"input_dir":"/tmp/jobflow_demo/in","output_dir":"/tmp/jobflow_demo/out","glob":"*.npy"}'
+```
 
-Contributions are welcome! Please open a pull request with clear changes and add tests when appropriate.
+Run multiple workers to process faster.
 
-## Issues
+Local demo (ZeroMQ)
+-------------------
+Install `pyzmq` first.
 
-Found a bug or have a request? Open an issue at https://github.com/Karol-G/jobflow/issues.
+1. Start manager:
+```bash
+python -m jobflow.manager \
+  --mode zmq \
+  --bind-host 0.0.0.0 \
+  --port 5555 \
+  --db-path /tmp/jobflow_demo/manager-zmq.db \
+  --program examples.npy_to_npz_program:NpyToNpzProgram \
+  --program-args '{"input_dir":"/tmp/jobflow_demo/in","output_dir":"/tmp/jobflow_demo/out","glob":"*.npy"}'
+```
 
-## License
+2. Start workers:
+```bash
+python -m jobflow.worker \
+  --mode zmq \
+  --manager-host 127.0.0.1 \
+  --port 5555 \
+  --program examples.npy_to_npz_program:NpyToNpzProgram \
+  --program-args '{"input_dir":"/tmp/jobflow_demo/in","output_dir":"/tmp/jobflow_demo/out","glob":"*.npy"}'
+```
 
-Distributed under the MIT license. See `LICENSE` for details.
+Delayed launches and batch systems
+----------------------------------
+- Launch requests create `LaunchRecord` rows immediately.
+- A launch does not count as online capacity until a worker sends `Register`.
+- Long queue delays are expected and safe due to pull-based scheduling.
+
+Optional launcher modules:
+- Multiprocess (local): `jobflow.launcher.multiprocess.MultiprocessLauncher`
+- LSF: `jobflow.launcher.lsf.LsfLauncher`
+- SLURM: `jobflow.launcher.slurm.SlurmLauncher`
+
+Manager can submit workers at startup:
+- `--enable-launcher {multiprocess|lsf|slurm}`
+- `--worker-count-on-start N`
+
+Implementation notes
+--------------------
+- Message envelope validation is strict (`v`, `msg_id`, `src/dst`, `type`, `payload`).
+- Unknown or invalid message direction/types are logged and ignored.
+- Dedup persisted in SQLite `processed_messages`.
+- Lease expiration triggers requeue until retries are exhausted.
