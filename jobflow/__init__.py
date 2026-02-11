@@ -2,7 +2,9 @@
 
 from importlib import metadata as _metadata
 
-__all__ = ["__version__"]
+from .task_id import generate_task_id
+
+__all__ = ["__version__", "generate_task_id"]
 
 try:
     __version__ = _metadata.version(__name__)

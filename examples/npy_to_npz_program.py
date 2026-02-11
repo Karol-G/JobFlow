@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shutil
@@ -17,6 +16,7 @@ if __package__ in {None, ""}:
 from jobflow.models import TaskDefinition
 from jobflow.program import ProgressCallback, TaskProgram
 from jobflow.manager import Manager
+from jobflow import generate_task_id
 
 
 class NpyToNpzProgram(TaskProgram):
@@ -35,7 +35,7 @@ class NpyToNpzProgram(TaskProgram):
             if not in_path.is_file():
                 continue
             rel = in_path.relative_to(input_dir).as_posix()
-            task_id = hashlib.sha1(rel.encode("utf-8")).hexdigest()
+            task_id = generate_task_id(rel)
             out_path = (output_dir / in_path.relative_to(input_dir)).with_suffix(".npz")
             yield TaskDefinition(
                 task_id=task_id,
