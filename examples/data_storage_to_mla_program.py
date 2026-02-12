@@ -80,32 +80,6 @@ class DataStorageToMlaProgram(TaskProgram):
         image_dicts = image_dicts[:max_images]
 
         tasks = tqdmp(generate_task, image_dicts, 20, data_storage_base=data_storage_base, output_dir=output_dir, max_retries=max_retries)
-
-        # tasks = []
-        # for image_dict in image_dicts[:max_images]:
-        #     if not isinstance(image_dict, dict):
-        #         continue
-
-        #     rel = image_dict.get("data_storage_filepath")
-        #     if not isinstance(rel, str) or not rel:
-        #         continue
-
-        #     rel_path = Path(rel)
-        #     load_path = data_storage_base / rel_path
-        #     save_path = (output_dir / rel_path).with_suffix(".mla")
-        #     if save_path.is_file():
-        #         continue
-
-        #     task_id = generate_task_id({"program": self.name(), "rel": rel_path.as_posix()})
-        #     tasks.append(TaskDefinition(
-        #         task_id=task_id,
-        #         spec={
-        #             "in": str(load_path),
-        #             "out": str(save_path),
-        #             "rel": rel_path.as_posix(),
-        #         },
-        #         max_retries=max_retries,
-        #     ))
             
         for task in tasks:
             yield task
