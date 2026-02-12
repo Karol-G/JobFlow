@@ -163,24 +163,31 @@ class Manager:
 
         inserted = 0
         existing = 0
+        spec_mismatch = 0
+        terminal_exists = 0
         last_ui_refresh_ts = time.time()
-        for task_def in task_defs:
-            status = self.store.upsert_task(task_def.task_id, task_def.spec, task_def.max_retries)
-            if status == "inserted":
-                inserted += 1
-            elif status == "spec_mismatch":
-                logger.warning("Task %s exists with different spec_json; keeping stored version", task_def.task_id)
-            elif status == "terminal_exists":
-                logger.info("Task %s already terminal in DB; skipping", task_def.task_id)
-            else:
-                existing += 1
+        chunk_size = 2000
+        for start in range(0, len(task_defs), chunk_size):
+            chunk = task_defs[start : start + chunk_size]
+            status = self.store.bulk_upsert_tasks(chunk)
+            inserted += status["inserted"]
+            existing += status["exists"]
+            spec_mismatch += status["spec_mismatch"]
+            terminal_exists += status["terminal_exists"]
             now = time.time()
             if now - last_ui_refresh_ts >= self.dashboard_refresh_s:
                 self._refresh_dashboard(now=now, force=True)
                 last_ui_refresh_ts = now
 
         counts = self.store.task_counts()
-        logger.info("Task generation completed: inserted=%s existing=%s state_counts=%s", inserted, existing, counts)
+        logger.info(
+            "Task generation completed: inserted=%s existing=%s spec_mismatch=%s terminal_exists=%s state_counts=%s",
+            inserted,
+            existing,
+            spec_mismatch,
+            terminal_exists,
+            counts,
+        )
         self._refresh_dashboard(force=True)
 
     def _submit_workers(self, count: int) -> None:

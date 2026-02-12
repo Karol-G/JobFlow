@@ -6,9 +6,9 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
-from .models import LaunchState, TaskState, WorkerState
+from .models import LaunchState, TaskDefinition, TaskState, WorkerState
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +130,84 @@ class Store:
         )
         self.conn.commit()
         return "exists"
+
+    def bulk_upsert_tasks(self, task_defs: list[TaskDefinition]) -> dict[str, int]:
+        status_counts = {
+            "inserted": 0,
+            "exists": 0,
+            "spec_mismatch": 0,
+            "terminal_exists": 0,
+        }
+        if not task_defs:
+            return status_counts
+
+        unique_task_ids = list(dict.fromkeys(task_def.task_id for task_def in task_defs))
+        existing: dict[str, dict[str, str]] = {}
+
+        for chunk in _chunked(unique_task_ids, 900):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.conn.execute(
+                f"SELECT task_id, spec_json, state FROM tasks WHERE task_id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                existing[row["task_id"]] = {
+                    "spec_json": row["spec_json"],
+                    "state": row["state"],
+                }
+
+        now = time.time()
+        inserts: list[tuple[str, str, str, int, float, float]] = []
+        updates: list[tuple[str, int, float, str]] = []
+
+        for task_def in task_defs:
+            task_id = task_def.task_id
+            spec_json = json.dumps(task_def.spec, sort_keys=True, separators=(",", ":"))
+            max_retries = int(task_def.max_retries)
+            row = existing.get(task_id)
+
+            if row is None:
+                inserts.append((task_id, spec_json, TaskState.QUEUED.value, max_retries, now, now))
+                status_counts["inserted"] += 1
+                # Handle duplicate task_ids in the same batch consistently.
+                existing[task_id] = {
+                    "spec_json": spec_json,
+                    "state": TaskState.QUEUED.value,
+                }
+                continue
+
+            if row["state"] in TERMINAL_TASK_STATES:
+                status_counts["terminal_exists"] += 1
+                continue
+
+            if row["spec_json"] != spec_json:
+                status_counts["spec_mismatch"] += 1
+                continue
+
+            updates.append((spec_json, max_retries, now, task_id))
+            status_counts["exists"] += 1
+
+        if inserts:
+            self.conn.executemany(
+                """
+                INSERT INTO tasks(
+                    task_id, spec_json, state, attempt, max_retries,
+                    assigned_worker_id, lease_id, lease_expires_at_ts,
+                    result_ref_json, error_json,
+                    created_ts, updated_ts, started_ts, finished_ts
+                ) VALUES (?, ?, ?, 0, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL, NULL)
+                """,
+                inserts,
+            )
+        if updates:
+            self.conn.executemany(
+                "UPDATE tasks SET spec_json = ?, max_retries = ?, updated_ts = ? WHERE task_id = ?",
+                updates,
+            )
+        if inserts or updates:
+            self.conn.commit()
+
+        return status_counts
 
     def get_task(self, task_id: str) -> Optional[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
@@ -388,3 +466,10 @@ class Store:
     def launch_counts(self) -> dict[str, int]:
         rows = self.conn.execute("SELECT state, COUNT(*) as c FROM launches GROUP BY state").fetchall()
         return {row["state"]: row["c"] for row in rows}
+
+
+def _chunked(items: list[str], size: int) -> Iterator[list[str]]:
+    if size <= 0:
+        raise ValueError("size must be > 0")
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
