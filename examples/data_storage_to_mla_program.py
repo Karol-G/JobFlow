@@ -5,6 +5,7 @@ import os
 import uuid
 from pathlib import Path
 from typing import Iterable, Tuple
+from tqdmp import tqdmp
 
 from jobflow import generate_task_id
 from jobflow.models import TaskDefinition
@@ -14,8 +15,30 @@ DEFAULT_BASE_PATH = Path("/omics/groups/OE0441/e230-thrp-data")
 DEFAULT_JSON_PATH = DEFAULT_BASE_PATH / "mic_rocket/data/mlarray/id_storage_paths.json"
 DEFAULT_DATA_STORAGE_SUBDIR = Path("mic_rocket/data/data_storage")
 DEFAULT_OUTPUT_SUBDIR = Path("mic_rocket/data/mlarray/data_store")
-DEFAULT_MAX_IMAGES = 10000
+DEFAULT_MAX_IMAGES = 1000
 DEFAULT_MAX_RETRIES = 2
+
+
+def generate_task(image_dict, data_storage_base, output_dir, max_retries):
+    rel = image_dict.get("data_storage_filepath")
+
+    rel_path = Path(rel)
+    load_path = data_storage_base / rel_path
+    save_path = (output_dir / rel_path).with_suffix(".mla")
+
+    task_id = generate_task_id({"rel": rel_path.as_posix()})
+    task = TaskDefinition(
+        task_id=task_id,
+        spec={
+            "in": str(load_path),
+            "out": str(save_path),
+            "rel": rel_path.as_posix(),
+        },
+        max_retries=max_retries,
+    )
+
+    return task
+
 
 
 class DataStorageToMlaProgram(TaskProgram):
@@ -53,32 +76,36 @@ class DataStorageToMlaProgram(TaskProgram):
 
         if not isinstance(image_dicts, list):
             raise ValueError(f"Expected a list in JSON file: {json_path}")
+        
+        image_dicts = image_dicts[:max_images]
 
-        tasks = []
-        for image_dict in image_dicts[:max_images]:
-            if not isinstance(image_dict, dict):
-                continue
+        tasks = tqdmp(generate_task, image_dicts, 20, data_storage_base=data_storage_base, output_dir=output_dir, max_retries=max_retries)
 
-            rel = image_dict.get("data_storage_filepath")
-            if not isinstance(rel, str) or not rel:
-                continue
+        # tasks = []
+        # for image_dict in image_dicts[:max_images]:
+        #     if not isinstance(image_dict, dict):
+        #         continue
 
-            rel_path = Path(rel)
-            load_path = data_storage_base / rel_path
-            save_path = (output_dir / rel_path).with_suffix(".mla")
-            if save_path.is_file():
-                continue
+        #     rel = image_dict.get("data_storage_filepath")
+        #     if not isinstance(rel, str) or not rel:
+        #         continue
 
-            task_id = generate_task_id({"program": self.name(), "rel": rel_path.as_posix()})
-            tasks.append(TaskDefinition(
-                task_id=task_id,
-                spec={
-                    "in": str(load_path),
-                    "out": str(save_path),
-                    "rel": rel_path.as_posix(),
-                },
-                max_retries=max_retries,
-            ))
+        #     rel_path = Path(rel)
+        #     load_path = data_storage_base / rel_path
+        #     save_path = (output_dir / rel_path).with_suffix(".mla")
+        #     if save_path.is_file():
+        #         continue
+
+        #     task_id = generate_task_id({"program": self.name(), "rel": rel_path.as_posix()})
+        #     tasks.append(TaskDefinition(
+        #         task_id=task_id,
+        #         spec={
+        #             "in": str(load_path),
+        #             "out": str(save_path),
+        #             "rel": rel_path.as_posix(),
+        #         },
+        #         max_retries=max_retries,
+        #     ))
             
         for task in tasks:
             yield task
