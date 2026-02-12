@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import signal
 import sys
 import time
@@ -19,6 +20,7 @@ from .models import LaunchState, TaskState, WorkerState
 from .program import load_program
 from .scheduler import FifoScheduler
 from .store import Store
+from .telemetry import NoopTelemetryPublisher, TelemetryPublisher, TelemetrySnapshot
 from .transport.base import Transport
 from .transport.fs_transport import FsTransport
 from .transport.zmq_transport import make_manager_transport
@@ -27,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class Manager:
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(self, args: argparse.Namespace, telemetry_publisher: Optional[TelemetryPublisher] = None) -> None:
         self._normalize_args(args)
         self._apply_log_level(args.log_level)
         self.args = args
@@ -53,6 +55,8 @@ class Manager:
         self._last_dashboard_refresh_ts = 0.0
         self.dashboard: Optional[ManagerDashboard] = self._make_dashboard(args)
         self.dashboard_refresh_s = float(args.dashboard_refresh)
+        self.telemetry_publisher: TelemetryPublisher = telemetry_publisher or NoopTelemetryPublisher()
+        self._telemetry_publisher_failed = False
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -273,23 +277,52 @@ class Manager:
         finally:
             if self.dashboard:
                 self.dashboard.stop()
+            try:
+                self.telemetry_publisher.close()
+            except Exception:
+                logger.exception("Telemetry publisher close failed.")
             self.transport.close()
             self.store.close()
 
     def _refresh_dashboard(self, *, now: Optional[float] = None, force: bool = False) -> None:
-        if self.dashboard is None:
+        if self.dashboard is None and isinstance(self.telemetry_publisher, NoopTelemetryPublisher):
             return
         ts = now if now is not None else time.time()
         if not force and ts - self._last_dashboard_refresh_ts < self.dashboard_refresh_s:
             return
         self._last_dashboard_refresh_ts = ts
-        self.dashboard.update(
-            task_counts=self.store.task_counts(),
-            worker_counts=self.store.worker_counts(),
-            launch_counts=self.store.launch_counts(),
+        task_counts = self.store.task_counts()
+        worker_counts = self.store.worker_counts()
+        launch_counts = self.store.launch_counts()
+
+        if self.dashboard is not None:
+            self.dashboard.update(
+                task_counts=task_counts,
+                worker_counts=worker_counts,
+                launch_counts=launch_counts,
+                shutdown_started=self._shutdown_started,
+                pending_shutdown_acks=len(self._pending_shutdown_acks),
+            )
+
+        snapshot = TelemetrySnapshot(
+            ts=ts,
+            manager_pid=os.getpid(),
+            task_counts=task_counts,
+            worker_counts=worker_counts,
+            launch_counts=launch_counts,
             shutdown_started=self._shutdown_started,
             pending_shutdown_acks=len(self._pending_shutdown_acks),
         )
+        self._publish_snapshot(snapshot)
+
+    def _publish_snapshot(self, snapshot: TelemetrySnapshot) -> None:
+        if self._telemetry_publisher_failed:
+            return
+        try:
+            self.telemetry_publisher.publish(snapshot)
+        except Exception:
+            self._telemetry_publisher_failed = True
+            logger.exception("Telemetry publisher failed; disabling telemetry publishing for this manager run.")
 
     def _timer_tick(self, now: float) -> None:
         cutoff = now - self.worker_timeout_s

@@ -3,8 +3,15 @@
 from importlib import metadata as _metadata
 
 from .task_id import generate_task_id
+from .telemetry import NoopTelemetryPublisher, TelemetryPublisher, TelemetrySnapshot
 
-__all__ = ["__version__", "generate_task_id"]
+__all__ = [
+    "__version__",
+    "generate_task_id",
+    "TelemetrySnapshot",
+    "TelemetryPublisher",
+    "NoopTelemetryPublisher",
+]
 
 try:
     __version__ = _metadata.version(__name__)
