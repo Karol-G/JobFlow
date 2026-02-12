@@ -150,10 +150,21 @@ class Manager:
         logger.info("Starting task generation with program=%s", self.args.program)
         self._refresh_dashboard(force=True)
 
+        raw_tasks = program.generate_tasks()
+        if isinstance(raw_tasks, list):
+            task_defs = raw_tasks
+        else:
+            # Backward compatibility for older programs that still yield.
+            task_defs = list(raw_tasks)
+            logger.warning(
+                "Program %s returned non-list tasks iterable; converting to list for bulk task API compatibility.",
+                self.args.program,
+            )
+
         inserted = 0
         existing = 0
         last_ui_refresh_ts = time.time()
-        for task_def in program.generate_tasks():
+        for task_def in task_defs:
             status = self.store.upsert_task(task_def.task_id, task_def.spec, task_def.max_retries)
             if status == "inserted":
                 inserted += 1

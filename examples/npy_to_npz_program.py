@@ -7,7 +7,6 @@ import shutil
 import sys
 import uuid
 from pathlib import Path
-from typing import Iterable
 
 # Allow direct script execution: `python examples/npy_to_npz_program.py`
 if __package__ in {None, ""}:
@@ -26,26 +25,30 @@ class NpyToNpzProgram(TaskProgram):
     The class name is kept for compatibility with existing references.
     """
 
-    def generate_tasks(self) -> Iterable[TaskDefinition]:
+    def generate_tasks(self) -> list[TaskDefinition]:
         input_dir = Path(self.program_args["input_dir"]).resolve()
         output_dir = Path(self.program_args["output_dir"]).resolve()
         glob_pat = self.program_args.get("glob", "*.npy")
 
+        tasks: list[TaskDefinition] = []
         for in_path in sorted(input_dir.rglob(glob_pat)):
             if not in_path.is_file():
                 continue
             rel = in_path.relative_to(input_dir).as_posix()
             task_id = generate_task_id(rel)
             out_path = (output_dir / in_path.relative_to(input_dir)).with_suffix(".npz")
-            yield TaskDefinition(
-                task_id=task_id,
-                spec={
-                    "in": str(in_path),
-                    "out": str(out_path),
-                    "rel": rel,
-                },
-                max_retries=2,
+            tasks.append(
+                TaskDefinition(
+                    task_id=task_id,
+                    spec={
+                        "in": str(in_path),
+                        "out": str(out_path),
+                        "rel": rel,
+                    },
+                    max_retries=2,
+                )
             )
+        return tasks
 
     def execute_task(self, spec: dict, progress_cb: ProgressCallback) -> dict:
         import numpy as np  # type: ignore

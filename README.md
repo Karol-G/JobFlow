@@ -47,8 +47,11 @@ Project modules
 TaskProgram API
 ---------------
 Implement `jobflow.program.TaskProgram`:
-- `generate_tasks()` runs on manager startup once.
+- `generate_tasks()` runs on manager startup once and returns a `list[TaskDefinition]`.
 - `execute_task(spec, progress_cb)` runs on workers per assignment.
+
+For compatibility, the manager still accepts legacy iterable/generator task outputs,
+but list return is the preferred API.
 
 Load with:
 - `--program module.path:ClassName`

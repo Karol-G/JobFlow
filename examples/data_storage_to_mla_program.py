@@ -4,7 +4,7 @@ import json
 import os
 import uuid
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Tuple
 from tqdmp import tqdmp
 
 from jobflow import generate_task_id
@@ -56,7 +56,7 @@ class DataStorageToMlaProgram(TaskProgram):
     - max_retries: optional per-task retry count
     """
 
-    def generate_tasks(self) -> Iterable[TaskDefinition]:
+    def generate_tasks(self) -> list[TaskDefinition]:
         base_path = Path(self.program_args.get("base_path", DEFAULT_BASE_PATH)).expanduser().resolve()
         default_data_storage_base = base_path / DEFAULT_DATA_STORAGE_SUBDIR
         default_output_dir = base_path / DEFAULT_OUTPUT_SUBDIR
@@ -79,10 +79,16 @@ class DataStorageToMlaProgram(TaskProgram):
         
         image_dicts = image_dicts[:max_images]
 
-        tasks = tqdmp(generate_task, image_dicts, 20, data_storage_base=data_storage_base, output_dir=output_dir, max_retries=max_retries)
-            
-        for task in tasks:
-            yield task
+        tasks = tqdmp(
+            generate_task,
+            image_dicts,
+            20,
+            data_storage_base=data_storage_base,
+            output_dir=output_dir,
+            max_retries=max_retries,
+        )
+
+        return tasks
 
     def execute_task(self, spec: dict, progress_cb: ProgressCallback) -> dict:
         from medvol import MedVol  # type: ignore

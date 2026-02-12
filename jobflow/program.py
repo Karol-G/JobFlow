@@ -6,7 +6,7 @@ import importlib.util
 import sys
 from importlib import import_module
 from pathlib import Path
-from typing import Callable, Iterable, Optional
+from typing import Callable, Optional
 
 from .models import TaskDefinition
 
@@ -22,7 +22,14 @@ class TaskProgram(ABC):
         return cls.__name__
 
     @abstractmethod
-    def generate_tasks(self) -> Iterable[TaskDefinition]:
+    def generate_tasks(self) -> list[TaskDefinition]:
+        """
+        Return all task definitions at once.
+
+        Returning a full list gives program authors flexibility to optimize
+        generation internally (parallel precomputation, batching, filtering)
+        before handing tasks to the manager.
+        """
         raise NotImplementedError
 
     @abstractmethod
