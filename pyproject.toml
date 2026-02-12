@@ -32,6 +32,7 @@ dev = [
 [project.scripts]
 jobflow = "jobflow.manager:main"
 jobflow-dashboard = "jobflow.dashboard_subscriber:main"
+jobflow-main = "jobflow.main:main"
 
 [project.urls]
 Homepage = "https://github.com/Karol-G/jobflow"

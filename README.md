@@ -34,6 +34,7 @@ Project modules
 - `jobflow/launcher/multiprocess.py`
 - `jobflow/launcher/slurm.py`
 - `jobflow/manager.py`
+- `jobflow/main.py`
 - `jobflow/dashboard.py`
 - `jobflow/dashboard_subscriber.py`
 - `jobflow/telemetry.py`
@@ -176,6 +177,26 @@ python -m jobflow.manager \
 python -m jobflow.dashboard_subscriber \
   --telemetry-file /tmp/jobflow_shared/demo1/dashboard_snapshot.json
 ```
+
+Supervisor wrapper (phase 3)
+----------------------------
+Run manager as the authority process and optionally spawn external dashboard automatically:
+
+```bash
+python -m jobflow.main \
+  --external-dashboard on \
+  --mode fs \
+  --shared-dir /tmp/jobflow_shared \
+  --session-id demo1 \
+  --db-path /tmp/jobflow_demo/manager.db \
+  --program examples.npy_to_npz_program:NpyToNpzProgram \
+  --program-args '{"input_dir":"/tmp/jobflow_demo/in","output_dir":"/tmp/jobflow_demo/out","glob":"*.npy"}'
+```
+
+Notes:
+- Wrapper arguments are parsed first (`--external-dashboard`, `--external-dashboard-refresh`, `--external-dashboard-stale-timeout`, `--supervisor-log-level`).
+- All remaining arguments are forwarded to `jobflow.manager`.
+- When external dashboard is enabled, wrapper forces manager `--dashboard off` and `--telemetry-mode file`.
 
 Implementation notes
 --------------------
