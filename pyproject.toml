@@ -30,7 +30,8 @@ dev = [
 ]
 
 [project.scripts]
-jobflow = "jobflow.manager:main"
+jobflow = "jobflow.main:main"
+jobflow-manager = "jobflow.manager:main"
 jobflow-dashboard = "jobflow.dashboard_subscriber:main"
 jobflow-main = "jobflow.main:main"
 

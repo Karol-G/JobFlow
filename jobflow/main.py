@@ -21,7 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--external-dashboard",
         choices=["auto", "on", "off"],
-        default="auto",
+        default="on",
         help="Run dashboard in a separate subscriber process.",
     )
     parser.add_argument(

@@ -183,8 +183,7 @@ Supervisor wrapper (phase 3)
 Run manager as the authority process and optionally spawn external dashboard automatically:
 
 ```bash
-python -m jobflow.main \
-  --external-dashboard on \
+jobflow \
   --mode fs \
   --shared-dir /tmp/jobflow_shared \
   --session-id demo1 \
@@ -194,6 +193,8 @@ python -m jobflow.main \
 ```
 
 Notes:
+- `jobflow` now points to the supervisor wrapper and defaults to `--external-dashboard on`.
+- Use `jobflow-manager` when you want manager-only behavior.
 - Wrapper arguments are parsed first (`--external-dashboard`, `--external-dashboard-refresh`, `--external-dashboard-stale-timeout`, `--supervisor-log-level`).
 - All remaining arguments are forwarded to `jobflow.manager`.
 - When external dashboard is enabled, wrapper forces manager `--dashboard off` and `--telemetry-mode file`.
