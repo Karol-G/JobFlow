@@ -14,7 +14,7 @@ DEFAULT_BASE_PATH = Path("/omics/groups/OE0441/e230-thrp-data")
 DEFAULT_JSON_PATH = DEFAULT_BASE_PATH / "mic_rocket/data/mlarray/id_storage_paths.json"
 DEFAULT_DATA_STORAGE_SUBDIR = Path("mic_rocket/data/data_storage")
 DEFAULT_OUTPUT_SUBDIR = Path("mic_rocket/data/mlarray/data_store")
-DEFAULT_MAX_IMAGES = 1000
+DEFAULT_MAX_IMAGES = 10000
 DEFAULT_MAX_RETRIES = 2
 
 
@@ -54,6 +54,7 @@ class DataStorageToMlaProgram(TaskProgram):
         if not isinstance(image_dicts, list):
             raise ValueError(f"Expected a list in JSON file: {json_path}")
 
+        tasks = []
         for image_dict in image_dicts[:max_images]:
             if not isinstance(image_dict, dict):
                 continue
@@ -69,7 +70,7 @@ class DataStorageToMlaProgram(TaskProgram):
                 continue
 
             task_id = generate_task_id({"program": self.name(), "rel": rel_path.as_posix()})
-            yield TaskDefinition(
+            tasks.append(TaskDefinition(
                 task_id=task_id,
                 spec={
                     "in": str(load_path),
@@ -77,7 +78,10 @@ class DataStorageToMlaProgram(TaskProgram):
                     "rel": rel_path.as_posix(),
                 },
                 max_retries=max_retries,
-            )
+            ))
+            
+        for task in tasks:
+            yield task
 
     def execute_task(self, spec: dict, progress_cb: ProgressCallback) -> dict:
         from medvol import MedVol  # type: ignore
