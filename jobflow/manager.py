@@ -57,6 +57,7 @@ class Manager:
         self.dashboard_refresh_s = float(args.dashboard_refresh)
         self.telemetry_publisher: TelemetryPublisher = telemetry_publisher or self._make_telemetry_publisher(args)
         self._telemetry_publisher_failed = False
+        self._manual_shutdown_requested = False
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -91,7 +92,11 @@ class Manager:
             args.telemetry_file = str(telemetry_path)
 
     def _handle_signal(self, signum: int, _frame: object) -> None:
-        logger.info("Received signal %s, stopping manager", signum)
+        if not self._manual_shutdown_requested:
+            logger.info("Received signal %s, initiating graceful shutdown", signum)
+            self._manual_shutdown_requested = True
+            return
+        logger.warning("Received second signal %s, forcing immediate manager stop", signum)
         self.running = False
 
     def _make_transport(self, args: argparse.Namespace) -> Transport:
@@ -421,16 +426,22 @@ class Manager:
     def _maybe_start_shutdown(self, now: float) -> None:
         if self._shutdown_started:
             return
+        if self._manual_shutdown_requested:
+            self._start_shutdown(now, reason="manual request")
+            return
         if not self._all_tasks_terminal():
             return
+        self._start_shutdown(now, reason="all tasks terminal")
 
+    def _start_shutdown(self, now: float, *, reason: str) -> None:
         self._shutdown_started = True
         self._shutdown_deadline_ts = now + self.shutdown_grace_period_s
 
         workers = self.store.list_non_offline_workers()
         self._pending_shutdown_acks = {row["worker_id"] for row in workers}
         logger.info(
-            "All tasks terminal; initiating shutdown handshake with %s workers",
+            "Initiating shutdown handshake (%s) with %s workers",
+            reason,
             len(self._pending_shutdown_acks),
         )
 

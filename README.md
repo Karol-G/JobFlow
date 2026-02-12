@@ -201,6 +201,7 @@ Notes:
 - Wrapper arguments are parsed first (`--external-dashboard`, `--external-dashboard-refresh`, `--external-dashboard-stale-timeout`, `--supervisor-log-level`).
 - All remaining arguments are forwarded to `jobflow.manager`.
 - When external dashboard is enabled, wrapper forces manager `--dashboard off` and `--telemetry-mode file`.
+- In interactive TTY mode, press `q` in the supervisor terminal to request graceful manager/worker shutdown.
 
 Implementation notes
 --------------------

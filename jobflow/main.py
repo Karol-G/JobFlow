@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import select
 import signal
 import subprocess
 import sys
@@ -62,6 +63,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     manager_cmd = _build_manager_cmd(manager_argv, use_external_dashboard, telemetry_file)
     logger.info("Starting manager process")
     manager_proc = subprocess.Popen(manager_cmd)
+    manager_shutdown_wait_s = max(5.0, float(manager_args.shutdown_grace_period) + 5.0)
 
     dashboard_proc: Optional[subprocess.Popen] = None
     if use_external_dashboard:
@@ -87,23 +89,32 @@ def main(argv: Optional[list[str]] = None) -> int:
     signal.signal(signal.SIGTERM, _stop)
 
     try:
-        while running:
-            rc = manager_proc.poll()
-            if rc is not None:
-                logger.info("Manager exited with code %s", rc)
-                _terminate_process(dashboard_proc, name="dashboard")
-                return int(rc)
+        with _SingleKeyReader() as key_reader:
+            if key_reader.is_enabled:
+                logger.info("Press 'q' to request graceful shutdown.")
+            while running:
+                key = key_reader.poll_key()
+                if key is not None and key.lower() == "q":
+                    logger.info("Received 'q'; requesting graceful shutdown.")
+                    running = False
+                    break
 
-            if dashboard_proc is not None:
-                dash_rc = dashboard_proc.poll()
-                if dash_rc is not None:
-                    logger.warning("Dashboard exited with code %s; manager continues.", dash_rc)
-                    dashboard_proc = None
+                rc = manager_proc.poll()
+                if rc is not None:
+                    logger.info("Manager exited with code %s", rc)
+                    _terminate_process(dashboard_proc, name="dashboard")
+                    return int(rc)
 
-            time.sleep(0.2)
+                if dashboard_proc is not None:
+                    dash_rc = dashboard_proc.poll()
+                    if dash_rc is not None:
+                        logger.warning("Dashboard exited with code %s; manager continues.", dash_rc)
+                        dashboard_proc = None
+
+                time.sleep(0.2)
 
         logger.info("Shutdown requested; stopping child processes.")
-        _terminate_process(manager_proc, name="manager")
+        _terminate_process(manager_proc, name="manager", timeout_s=manager_shutdown_wait_s)
         _terminate_process(dashboard_proc, name="dashboard")
         return 0
     finally:
@@ -160,14 +171,14 @@ def _build_dashboard_cmd(*, telemetry_file: str, refresh_s: float, stale_timeout
     ]
 
 
-def _terminate_process(proc: Optional[subprocess.Popen], *, name: str) -> None:
+def _terminate_process(proc: Optional[subprocess.Popen], *, name: str, timeout_s: float = 5.0) -> None:
     if proc is None:
         return
     if proc.poll() is not None:
         return
     try:
         proc.terminate()
-        proc.wait(timeout=5.0)
+        proc.wait(timeout=max(0.1, float(timeout_s)))
     except Exception:
         logger.warning("Force killing %s process", name)
         try:
@@ -175,6 +186,55 @@ def _terminate_process(proc: Optional[subprocess.Popen], *, name: str) -> None:
             proc.wait(timeout=2.0)
         except Exception:
             logger.exception("Failed stopping %s process", name)
+
+
+class _SingleKeyReader:
+    def __init__(self) -> None:
+        self.is_enabled = False
+        self._fd: Optional[int] = None
+        self._old_termios = None
+
+    def __enter__(self) -> "_SingleKeyReader":
+        if not sys.stdin.isatty():
+            return self
+
+        try:
+            import termios
+            import tty
+        except Exception:
+            return self
+
+        try:
+            self._fd = sys.stdin.fileno()
+            self._old_termios = termios.tcgetattr(self._fd)
+            tty.setcbreak(self._fd)
+            self.is_enabled = True
+        except Exception:
+            self._fd = None
+            self._old_termios = None
+            self.is_enabled = False
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if not self.is_enabled or self._fd is None or self._old_termios is None:
+            return
+        try:
+            import termios
+
+            termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_termios)
+        except Exception:
+            logger.exception("Failed restoring terminal mode.")
+
+    def poll_key(self) -> Optional[str]:
+        if not self.is_enabled or self._fd is None:
+            return None
+        try:
+            ready, _, _ = select.select([self._fd], [], [], 0)
+            if not ready:
+                return None
+            return sys.stdin.read(1)
+        except Exception:
+            return None
 
 
 if __name__ == "__main__":
