@@ -34,6 +34,9 @@ Project modules
 - `jobflow/launcher/multiprocess.py`
 - `jobflow/launcher/slurm.py`
 - `jobflow/manager.py`
+- `jobflow/dashboard.py`
+- `jobflow/dashboard_subscriber.py`
+- `jobflow/telemetry.py`
 - `jobflow/worker.py`
 - `examples/npy_to_npz_program.py`
   - Demo converts `.npy` inputs to compressed `.npz` outputs.
@@ -148,6 +151,31 @@ Manager can maintain a target worker pool:
 - `--worker-manager-timeout-minutes MINUTES` forwarded to launched workers.
 - `--dashboard {auto|on|off}` live full-screen manager dashboard (auto enables on TTY).
 - `--dashboard-refresh SECONDS` and `--dashboard-log-lines N` tune dashboard updates/log buffer.
+- `--telemetry-mode {off|file}` enables manager snapshot publishing for external observers.
+- `--telemetry-file PATH` output JSON snapshot path (auto-derived when omitted in file mode).
+- `--telemetry-queue-size N` bounded publish queue length; oldest snapshots are dropped first.
+
+External dashboard subscriber (separate process)
+------------------------------------------------
+Use manager telemetry publishing with a separate read-only dashboard process:
+
+1. Start manager with telemetry:
+```bash
+python -m jobflow.manager \
+  --mode fs \
+  --shared-dir /tmp/jobflow_shared \
+  --session-id demo1 \
+  --db-path /tmp/jobflow_demo/manager.db \
+  --telemetry-mode file \
+  --program examples.npy_to_npz_program:NpyToNpzProgram \
+  --program-args '{"input_dir":"/tmp/jobflow_demo/in","output_dir":"/tmp/jobflow_demo/out","glob":"*.npy"}'
+```
+
+2. Start dashboard subscriber:
+```bash
+python -m jobflow.dashboard_subscriber \
+  --telemetry-file /tmp/jobflow_shared/demo1/dashboard_snapshot.json
+```
 
 Implementation notes
 --------------------

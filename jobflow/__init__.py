@@ -3,7 +3,14 @@
 from importlib import metadata as _metadata
 
 from .task_id import generate_task_id
-from .telemetry import NoopTelemetryPublisher, TelemetryPublisher, TelemetrySnapshot
+from .telemetry import (
+    FileTelemetryPublisher,
+    NoopTelemetryPublisher,
+    TelemetryPublisher,
+    TelemetrySnapshot,
+    snapshot_from_dict,
+    snapshot_to_dict,
+)
 
 __all__ = [
     "__version__",
@@ -11,6 +18,9 @@ __all__ = [
     "TelemetrySnapshot",
     "TelemetryPublisher",
     "NoopTelemetryPublisher",
+    "FileTelemetryPublisher",
+    "snapshot_to_dict",
+    "snapshot_from_dict",
 ]
 
 try:

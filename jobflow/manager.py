@@ -20,7 +20,7 @@ from .models import LaunchState, TaskState, WorkerState
 from .program import load_program
 from .scheduler import FifoScheduler
 from .store import Store
-from .telemetry import NoopTelemetryPublisher, TelemetryPublisher, TelemetrySnapshot
+from .telemetry import FileTelemetryPublisher, NoopTelemetryPublisher, TelemetryPublisher, TelemetrySnapshot
 from .transport.base import Transport
 from .transport.fs_transport import FsTransport
 from .transport.zmq_transport import make_manager_transport
@@ -55,7 +55,7 @@ class Manager:
         self._last_dashboard_refresh_ts = 0.0
         self.dashboard: Optional[ManagerDashboard] = self._make_dashboard(args)
         self.dashboard_refresh_s = float(args.dashboard_refresh)
-        self.telemetry_publisher: TelemetryPublisher = telemetry_publisher or NoopTelemetryPublisher()
+        self.telemetry_publisher: TelemetryPublisher = telemetry_publisher or self._make_telemetry_publisher(args)
         self._telemetry_publisher_failed = False
 
         signal.signal(signal.SIGINT, self._handle_signal)
@@ -72,11 +72,23 @@ class Manager:
             args.dashboard_refresh = 0.5
         if not hasattr(args, "dashboard_log_lines"):
             args.dashboard_log_lines = 500
+        if not hasattr(args, "telemetry_mode"):
+            args.telemetry_mode = "off"
+        if not hasattr(args, "telemetry_file"):
+            args.telemetry_file = None
+        if not hasattr(args, "telemetry_queue_size"):
+            args.telemetry_queue_size = 2
         if args.mode == "fs":
             if not args.shared_dir:
                 args.shared_dir = str(Path.cwd())
             if not args.session_id:
                 args.session_id = "jobflow-session"
+        if args.telemetry_mode == "file" and not args.telemetry_file:
+            if args.mode == "fs":
+                telemetry_path = Path(args.shared_dir) / args.session_id / "dashboard_snapshot.json"
+            else:
+                telemetry_path = Path(args.db_path).with_suffix(".dashboard.json")
+            args.telemetry_file = str(telemetry_path)
 
     def _handle_signal(self, signum: int, _frame: object) -> None:
         logger.info("Received signal %s, stopping manager", signum)
@@ -121,6 +133,16 @@ class Manager:
             refresh_s=float(args.dashboard_refresh),
             log_lines=int(args.dashboard_log_lines),
         )
+
+    def _make_telemetry_publisher(self, args: argparse.Namespace) -> TelemetryPublisher:
+        if args.telemetry_mode == "off":
+            return NoopTelemetryPublisher()
+        if args.telemetry_mode == "file":
+            return FileTelemetryPublisher(
+                Path(args.telemetry_file),
+                max_queue=int(args.telemetry_queue_size),
+            )
+        raise ValueError(f"Unsupported telemetry mode: {args.telemetry_mode}")
 
     def bootstrap_tasks(self) -> None:
         program_args = _parse_json_dict(self.args.program_args)
@@ -745,6 +767,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dashboard", choices=["auto", "on", "off"], default="auto")
     parser.add_argument("--dashboard-refresh", type=float, default=0.5)
     parser.add_argument("--dashboard-log-lines", type=int, default=500)
+    parser.add_argument("--telemetry-mode", choices=["off", "file"], default="off")
+    parser.add_argument("--telemetry-file", default=None)
+    parser.add_argument("--telemetry-queue-size", type=int, default=2)
     parser.add_argument("--bind-host", default="0.0.0.0")
     parser.add_argument("--port", "-p", type=int, default=5555)
     parser.add_argument("--manager-host", default=None)
