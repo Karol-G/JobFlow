@@ -916,7 +916,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--program-args", "-A", default="{}", help="JSON object passed to TaskProgram constructor.")
     parser.add_argument("--launcher", choices=["none", "multiprocess", "lsf", "slurm"], default="multiprocess", help="Worker launcher backend.")
     parser.add_argument("--launch-stale-timeout", type=int, default=21600, help="Seconds before unresolved launch is marked STALE.")
-    parser.add_argument("--launch-poll-interval", type=int, default=30, help="Launcher state poll interval in seconds.")
+    parser.add_argument("--launch-poll-interval", type=int, default=240, help="Launcher state poll interval in seconds.")
     parser.add_argument("--workers", type=int, default=10, help="Target worker pool size maintained by manager.")
     parser.add_argument("--lsf-queue", default="medium", help="LSF queue name for submitted workers.")
     parser.add_argument("--lsf-nproc", type=int, default=1, help="LSF worker CPU slot request (-n).")
