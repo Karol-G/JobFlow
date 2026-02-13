@@ -63,7 +63,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     manager_cmd = _build_manager_cmd(manager_argv, use_external_dashboard, telemetry_file)
     logger.info("Starting manager process")
-    manager_proc = subprocess.Popen(manager_cmd)
+    manager_popen_kwargs: dict = {}
+    if use_external_dashboard:
+        manager_popen_kwargs["stdout"] = subprocess.DEVNULL
+        manager_popen_kwargs["stderr"] = subprocess.DEVNULL
+    manager_proc = subprocess.Popen(manager_cmd, **manager_popen_kwargs)
     manager_shutdown_wait_s = max(5.0, float(manager_args.shutdown_grace_period) + 5.0)
 
     dashboard_proc: Optional[subprocess.Popen] = None

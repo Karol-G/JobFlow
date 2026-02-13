@@ -10,6 +10,8 @@ import socket
 import subprocess
 import sys
 import time
+import threading
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -38,11 +40,31 @@ from .transport.zmq_transport import make_manager_transport
 logger = logging.getLogger(__name__)
 
 
+class _RingLogHandler(logging.Handler):
+    def __init__(self, *, max_lines: int) -> None:
+        super().__init__()
+        self._lines: deque[str] = deque(maxlen=max(50, int(max_lines)))
+        self._lock = threading.Lock()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+        except Exception:
+            msg = record.getMessage()
+        with self._lock:
+            self._lines.append(msg)
+
+    def snapshot(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(self._lines)
+
+
 class Manager:
     def __init__(self, args: argparse.Namespace, telemetry_publisher: Optional[TelemetryPublisher] = None) -> None:
         self._normalize_args(args)
         self._apply_log_level(args.log_level)
         self._ensure_file_logging(Path(args.db_path))
+        self._telemetry_log_handler = self._make_telemetry_log_handler(args)
         self.args = args
         self.store = Store(Path(args.db_path))
         recovery = self.store.recover_after_manager_restart()
@@ -109,6 +131,8 @@ class Manager:
             args.telemetry_queue_size = 2
         if not hasattr(args, "telemetry_refresh"):
             args.telemetry_refresh = 0.5
+        if not hasattr(args, "telemetry_log_lines"):
+            args.telemetry_log_lines = 500
         if not hasattr(args, "launcher_cmd_queue_size"):
             args.launcher_cmd_queue_size = 512
         if not hasattr(args, "launcher_result_queue_size"):
@@ -140,6 +164,13 @@ class Manager:
             else:
                 telemetry_path = Path(args.db_path).with_suffix(".dashboard.json")
             args.telemetry_file = str(telemetry_path)
+
+    def _make_telemetry_log_handler(self, args: argparse.Namespace) -> _RingLogHandler:
+        root = logging.getLogger()
+        handler = _RingLogHandler(max_lines=int(args.telemetry_log_lines))
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s"))
+        root.addHandler(handler)
+        return handler
 
     def _handle_signal(self, signum: int, _frame: object) -> None:
         if not self._manual_shutdown_requested:
@@ -536,6 +567,9 @@ class Manager:
             logger.info("Manager exiting with task summary: %s", summary)
             return summary
         finally:
+            root_logger = logging.getLogger()
+            if self._telemetry_log_handler in root_logger.handlers:
+                root_logger.removeHandler(self._telemetry_log_handler)
             if self.launcher_service is not None:
                 self.launcher_service.stop(timeout_s=float(self.args.launcher_service_shutdown_timeout))
                 self._drain_launcher_results(max_items=2048)
@@ -565,6 +599,7 @@ class Manager:
             launch_counts=launch_counts,
             shutdown_started=self._shutdown_started,
             pending_shutdown_acks=len(self._pending_shutdown_acks),
+            recent_logs=self._telemetry_log_handler.snapshot(),
         )
         self._publish_snapshot(snapshot)
 
@@ -1064,6 +1099,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--telemetry-file", default=None, help="Telemetry snapshot file path when --telemetry-mode file.")
     parser.add_argument("--telemetry-queue-size", type=int, default=2, help="Bounded telemetry publish queue size.")
     parser.add_argument("--telemetry-refresh", type=float, default=0.5, help="Telemetry snapshot publish interval in seconds.")
+    parser.add_argument("--telemetry-log-lines", type=int, default=500, help="Max manager log lines included in telemetry snapshots.")
     parser.add_argument("--bind-host", default="0.0.0.0", help="Host/interface address the manager binds to.")
     parser.add_argument("--port", "-p", type=int, default=5555, help="Manager listening port.")
     parser.add_argument("--manager-host", default=None, help="Reachable manager host/IP advertised to launched workers in ZMQ mode (auto-detected from `hostname -I` when omitted).")
