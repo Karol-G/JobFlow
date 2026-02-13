@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import logging
 import os
 import signal
+import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -98,6 +101,16 @@ class Manager:
                 args.shared_dir = str(Path.cwd())
             if not args.session_id:
                 args.session_id = "jobflow-session"
+        elif args.mode == "zmq" and not args.manager_host:
+            detected_host = _detect_manager_host(args.bind_host)
+            if detected_host:
+                args.manager_host = detected_host
+                logger.info("Auto-detected --manager-host=%s from local network interfaces.", detected_host)
+            else:
+                logger.warning(
+                    "Could not auto-detect manager host via `hostname -I`; "
+                    "launched workers may require explicit --manager-host."
+                )
         if args.telemetry_mode == "file" and not args.telemetry_file:
             if args.mode == "fs":
                 telemetry_path = Path(args.shared_dir) / args.session_id / "dashboard_snapshot.json"
@@ -769,6 +782,48 @@ def _parse_json_dict(raw: str) -> dict:
     return out
 
 
+def _detect_manager_host(bind_host: str) -> Optional[str]:
+    try:
+        proc = subprocess.run(
+            ["hostname", "-I"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+        if proc.returncode == 0:
+            candidates = [token.strip() for token in proc.stdout.split() if token.strip()]
+            non_loopback = [ip for ip in candidates if not _is_loopback_ip(ip)]
+            if non_loopback:
+                return non_loopback[0]
+            if candidates:
+                return candidates[0]
+    except Exception:
+        logger.debug("Failed to run `hostname -I` for manager host auto-detection.", exc_info=True)
+
+    # Fallback: probe preferred source address for outbound traffic without sending packets.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            candidate = sock.getsockname()[0]
+            if candidate and not _is_loopback_ip(candidate):
+                return candidate
+    except Exception:
+        logger.debug("Socket fallback failed for manager host auto-detection.", exc_info=True)
+
+    # If bound to a concrete interface address, reuse it as a pragmatic fallback.
+    if bind_host and bind_host not in {"0.0.0.0", "::"}:
+        return bind_host
+    return None
+
+
+def _is_loopback_ip(value: str) -> bool:
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="JobFlow manager process", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--mode", "-m", choices=["zmq", "fs"], default="fs", help="Transport mode for manager/worker communication.")
@@ -778,7 +833,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--telemetry-refresh", type=float, default=0.5, help="Telemetry snapshot publish interval in seconds.")
     parser.add_argument("--bind-host", default="0.0.0.0", help="Host/interface address the manager binds to.")
     parser.add_argument("--port", "-p", type=int, default=5555, help="Manager listening port.")
-    parser.add_argument("--manager-host", default=None, help="Reachable manager host/IP advertised to launched workers in ZMQ mode.")
+    parser.add_argument("--manager-host", default=None, help="Reachable manager host/IP advertised to launched workers in ZMQ mode (auto-detected from `hostname -I` when omitted).")
     parser.add_argument("--shared-dir", "-s", default=None, help="Shared filesystem root used by fs transport mode.")
     parser.add_argument("--session-id", default="jobflow-session", help="Session namespace used in fs transport mode.")
     parser.add_argument("--lease-duration", "-l", type=int, default=1800, help="Task lease duration in seconds.")
