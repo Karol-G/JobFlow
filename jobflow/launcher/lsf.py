@@ -31,8 +31,8 @@ class LsfLauncher(Launcher):
     ) -> list[LaunchRecord]:
         records: list[LaunchRecord] = []
         now = time.time()
-        queue = str(requested.get("lsf_queue", "long"))
-        nproc = int(requested.get("lsf_nproc", 10))
+        queue = str(requested.get("lsf_queue", "medium"))
+        nproc = int(requested.get("lsf_nproc", 1))
         mem = str(requested.get("lsf_mem", "20GB"))
         env_script = str(requested.get("lsf_env_script", "")).strip()
 
