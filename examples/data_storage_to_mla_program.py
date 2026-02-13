@@ -15,7 +15,7 @@ DEFAULT_BASE_PATH = Path("/omics/groups/OE0441/e230-thrp-data")
 DEFAULT_JSON_PATH = DEFAULT_BASE_PATH / "mic_rocket/data/mlarray/id_storage_paths.json"
 DEFAULT_DATA_STORAGE_SUBDIR = Path("mic_rocket/data/data_storage")
 DEFAULT_OUTPUT_SUBDIR = Path("mic_rocket/data/mlarray/data_store")
-DEFAULT_MAX_IMAGES = 1000
+DEFAULT_MAX_IMAGES = 50000
 DEFAULT_MAX_RETRIES = 2
 
 
@@ -86,6 +86,7 @@ class DataStorageToMlaProgram(TaskProgram):
             data_storage_base=data_storage_base,
             output_dir=output_dir,
             max_retries=max_retries,
+            disable=True
         )
 
         return tasks
@@ -98,7 +99,12 @@ class DataStorageToMlaProgram(TaskProgram):
         save_path = Path(spec["out"]).expanduser()
 
         if save_path.is_file():
-            return {"status": "skipped_exists", "path": str(save_path)}
+            try:
+                mla = MLArray.open(save_path)
+                _ = mla.shape
+                return {"status": "skipped_exists", "path": str(save_path)}
+            except Exception as e:
+                pass            
 
         progress_cb(0.05, {"phase": "load"})
         mv = MedVol(load_path)
