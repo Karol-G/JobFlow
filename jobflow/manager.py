@@ -34,6 +34,9 @@ class Manager:
         self._apply_log_level(args.log_level)
         self.args = args
         self.store = Store(Path(args.db_path))
+        recovery = self.store.recover_after_manager_restart()
+        if any(recovery.values()):
+            logger.info("Recovered persisted transient state on startup: %s", recovery)
         self.scheduler = FifoScheduler()
         self.transport = self._make_transport(args)
         self.launcher = self._make_launcher(args.launcher)

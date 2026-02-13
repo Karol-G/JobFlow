@@ -210,4 +210,5 @@ Implementation notes
 - Dedup persisted in SQLite `processed_messages`.
 - Lease expiration triggers requeue until retries are exhausted.
 - Manager shutdown flow: detect terminal tasks, send `Shutdown`, wait for `ShutdownAck` or timeout, then cancel remaining launches as fallback.
+- Manager restart recovery: assumes workers offline at startup, re-queues in-flight tasks, clears leases, and marks unresolved launches stale.
 - Dashboard mode: full-screen view with color progress bar, worker/task stats, and live manager log tail.

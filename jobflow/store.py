@@ -209,6 +209,90 @@ class Store:
 
         return status_counts
 
+    def recover_after_manager_restart(self, now_ts: Optional[float] = None) -> dict[str, int]:
+        """
+        Reset transient runtime state so a restarted manager starts from a clean baseline.
+
+        Behavior:
+        - assume workers are offline until they heartbeat/register again
+        - re-queue ASSIGNED/RUNNING tasks
+        - clear outstanding leases
+        - mark unresolved launch rows as STALE
+        """
+        now = float(now_ts) if now_ts is not None else time.time()
+        recovery_error = json.dumps({"reason": "manager_restarted"}, sort_keys=True, separators=(",", ":"))
+
+        worker_rows = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM workers WHERE state != ? OR current_lease_id IS NOT NULL",
+            (WorkerState.OFFLINE.value,),
+        ).fetchone()
+        workers_offlined = int(worker_rows["c"]) if worker_rows is not None else 0
+
+        task_rows = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM tasks WHERE state IN (?, ?)",
+            (TaskState.ASSIGNED.value, TaskState.RUNNING.value),
+        ).fetchone()
+        tasks_requeued = int(task_rows["c"]) if task_rows is not None else 0
+
+        lease_rows = self.conn.execute("SELECT COUNT(*) AS c FROM leases").fetchone()
+        leases_cleared = int(lease_rows["c"]) if lease_rows is not None else 0
+
+        launch_rows = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM launches WHERE state IN (?, ?, ?, ?)",
+            (
+                LaunchState.SUBMITTED.value,
+                LaunchState.PENDING.value,
+                LaunchState.RUNNING.value,
+                LaunchState.ONLINE.value,
+            ),
+        ).fetchone()
+        launches_staled = int(launch_rows["c"]) if launch_rows is not None else 0
+
+        self.conn.execute(
+            "UPDATE workers SET state = ?, current_lease_id = NULL WHERE state != ? OR current_lease_id IS NOT NULL",
+            (WorkerState.OFFLINE.value, WorkerState.OFFLINE.value),
+        )
+        self.conn.execute(
+            """
+            UPDATE tasks
+            SET
+                state = ?,
+                assigned_worker_id = NULL,
+                lease_id = NULL,
+                lease_expires_at_ts = NULL,
+                error_json = ?,
+                updated_ts = ?
+            WHERE state IN (?, ?)
+            """,
+            (
+                TaskState.QUEUED.value,
+                recovery_error,
+                now,
+                TaskState.ASSIGNED.value,
+                TaskState.RUNNING.value,
+            ),
+        )
+        self.conn.execute("DELETE FROM leases")
+        self.conn.execute(
+            "UPDATE launches SET state = ?, last_update_ts = ? WHERE state IN (?, ?, ?, ?)",
+            (
+                LaunchState.STALE.value,
+                now,
+                LaunchState.SUBMITTED.value,
+                LaunchState.PENDING.value,
+                LaunchState.RUNNING.value,
+                LaunchState.ONLINE.value,
+            ),
+        )
+        self.conn.commit()
+
+        return {
+            "workers_offlined": workers_offlined,
+            "tasks_requeued": tasks_requeued,
+            "leases_cleared": leases_cleared,
+            "launches_staled": launches_staled,
+        }
+
     def get_task(self, task_id: str) -> Optional[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
 
