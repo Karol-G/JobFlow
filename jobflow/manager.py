@@ -253,26 +253,96 @@ class Manager:
         if self.launcher is None or self._shutdown_started:
             return
         target = max(0, int(self.args.workers))
+
+        online_workers = self.store.count_non_offline_workers()
+        worker_counts = self.store.worker_counts()
+        draining_workers = int(worker_counts.get(WorkerState.DRAINING.value, 0))
+        effective_online_workers = max(0, online_workers - draining_workers)
+        pending_launches = self.store.count_pending_launches()
+        in_pool = effective_online_workers + pending_launches
+
+        if in_pool > target:
+            excess = in_pool - target
+            logger.info(
+                "Worker pool above target: target=%s effective_online=%s draining=%s pending_launches=%s; reducing by %s",
+                target,
+                effective_online_workers,
+                draining_workers,
+                pending_launches,
+                excess,
+            )
+            self._scale_down_pool(excess)
+            return
+
         if target <= 0:
             return
         if not self._has_remaining_tasks():
             return
 
-        online_workers = self.store.count_non_offline_workers()
-        pending_launches = self.store.count_pending_launches()
-        in_pool = online_workers + pending_launches
         missing = target - in_pool
         if missing <= 0:
             return
-
         logger.info(
-            "Worker pool below target: target=%s online=%s pending_launches=%s; submitting %s workers",
+            "Worker pool below target: target=%s effective_online=%s draining=%s pending_launches=%s; submitting %s workers",
             target,
-            online_workers,
+            effective_online_workers,
+            draining_workers,
             pending_launches,
             missing,
         )
         self._submit_workers(missing)
+
+    def _scale_down_pool(self, excess: int) -> None:
+        remaining = max(0, int(excess))
+        if remaining <= 0:
+            return
+
+        canceled = self._cancel_pending_launches_for_scale_down(remaining)
+        remaining -= canceled
+        if remaining <= 0:
+            return
+
+        workers = self.store.list_non_offline_workers()
+        idle_workers = [row for row in workers if row["state"] == WorkerState.IDLE.value]
+        starting_workers = [row for row in workers if row["state"] == WorkerState.STARTING.value]
+        busy_workers = [row for row in workers if row["state"] == WorkerState.BUSY.value]
+        candidates = idle_workers + starting_workers + busy_workers
+        selected = candidates[:remaining]
+
+        for row in selected:
+            worker_id = row["worker_id"]
+            current_lease_id = row["current_lease_id"] if isinstance(row["current_lease_id"], str) else None
+            self.store.set_worker_state(worker_id, WorkerState.DRAINING, current_lease_id=current_lease_id)
+            self._send_to_worker(worker_id, "Shutdown", {"graceful": True})
+            logger.info("Requested graceful scale-down shutdown for worker=%s state=%s", worker_id, row["state"])
+
+        if len(selected) < remaining:
+            logger.info(
+                "Scale-down still above target by %s but no additional IDLE/STARTING/BUSY workers are available for new shutdown requests.",
+                remaining - len(selected),
+            )
+
+    def _cancel_pending_launches_for_scale_down(self, max_cancel: int) -> int:
+        if self.launcher is None:
+            return 0
+        remaining = max(0, int(max_cancel))
+        if remaining <= 0:
+            return 0
+
+        canceled = 0
+        for row in self.store.list_pending_launches_for_scale_down(remaining):
+            batch_job_id = row["batch_job_id"]
+            if not batch_job_id:
+                continue
+            launch_id = row["launch_id"]
+            try:
+                self.launcher.cancel(str(batch_job_id))
+                self.store.mark_launch_state(launch_id, LaunchState.CANCELED)
+                canceled += 1
+                logger.info("Canceled pending launch for scale-down: launch_id=%s batch_job_id=%s", launch_id, batch_job_id)
+            except Exception:
+                logger.exception("Failed canceling pending launch during scale-down: launch_id=%s batch_job_id=%s", launch_id, batch_job_id)
+        return canceled
 
     def _build_worker_command(self) -> list[str]:
         cmd = [

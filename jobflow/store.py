@@ -547,6 +547,20 @@ class Store:
         ).fetchone()
         return int(row["c"]) if row is not None else 0
 
+    def list_pending_launches_for_scale_down(self, limit: int) -> list[sqlite3.Row]:
+        if limit <= 0:
+            return []
+        return self.conn.execute(
+            """
+            SELECT * FROM launches
+            WHERE batch_job_id IS NOT NULL
+              AND state IN (?, ?, ?)
+            ORDER BY submitted_ts DESC
+            LIMIT ?
+            """,
+            (LaunchState.SUBMITTED.value, LaunchState.PENDING.value, LaunchState.RUNNING.value, int(limit)),
+        ).fetchall()
+
     def launch_counts(self) -> dict[str, int]:
         rows = self.conn.execute("SELECT state, COUNT(*) as c FROM launches GROUP BY state").fetchall()
         return {row["state"]: row["c"] for row in rows}
