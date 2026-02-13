@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from .dashboard import RICH_AVAILABLE, _format_duration, _stacked_bar
+from .logging_utils import resolve_log_level
 from .telemetry import TelemetrySnapshot, snapshot_from_dict
 
 logger = logging.getLogger(__name__)
@@ -195,7 +196,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        level=resolve_log_level(args.log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
 

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from .messages import make_envelope, validate_type_for_direction
+from .logging_utils import resolve_log_level
 from .program import load_program
 from .transport.base import Transport
 from .transport.fs_transport import FsTransport
@@ -388,7 +389,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        level=resolve_log_level(args.log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
 

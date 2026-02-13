@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .logging_utils import resolve_log_level
 from .manager import build_parser as build_manager_parser
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     wrapper_args, manager_argv = parser.parse_known_args(argv)
 
     logging.basicConfig(
-        level=getattr(logging, wrapper_args.supervisor_log_level.upper(), logging.INFO),
+        level=resolve_log_level(wrapper_args.supervisor_log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
 

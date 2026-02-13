@@ -26,6 +26,7 @@ from .launcher.service import (
 from .launcher.slurm import SlurmLauncher
 from .messages import make_envelope, validate_type_for_direction
 from .models import LaunchState, TaskState, WorkerState
+from .logging_utils import INFO_VERBOSE_LEVEL, resolve_log_level
 from .program import load_program
 from .scheduler import FifoScheduler
 from .store import Store
@@ -80,7 +81,7 @@ class Manager:
         signal.signal(signal.SIGTERM, self._handle_signal)
 
     def _apply_log_level(self, raw_level: str) -> None:
-        level = getattr(logging, str(raw_level).upper(), logging.INFO)
+        level = resolve_log_level(raw_level, logging.INFO)
         logging.getLogger().setLevel(level)
 
     def _ensure_file_logging(self, db_path: Path) -> None:
@@ -903,7 +904,7 @@ class Manager:
                 "lease_expires_at_ts": lease_expires,
             },
         )
-        logger.info("Assigned task=%s to worker=%s lease=%s attempt=%s", task["task_id"], worker_id, lease_id, attempt)
+        logger.log(INFO_VERBOSE_LEVEL, "Assigned task=%s to worker=%s lease=%s attempt=%s", task["task_id"], worker_id, lease_id, attempt)
 
     def _on_task_started(self, worker_id: str, payload: dict) -> None:
         task_id = payload.get("task_id")
@@ -950,7 +951,7 @@ class Manager:
         self.store.set_worker_state(worker_id, WorkerState.IDLE, current_lease_id=None)
         if self._shutdown_started:
             self._send_to_worker(worker_id, "Shutdown", {"graceful": True})
-        logger.info("Task succeeded task=%s worker=%s", task_id, worker_id)
+        logger.log(INFO_VERBOSE_LEVEL, "Task succeeded task=%s worker=%s", task_id, worker_id)
 
     def _on_task_failed(self, worker_id: str, payload: dict) -> None:
         task_id = payload.get("task_id")
@@ -1089,7 +1090,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lsf-nproc", type=int, default=1, help="LSF worker CPU slot request (-n).")
     parser.add_argument("--lsf-mem", default="20GB", help="LSF memory request used in rusage[mem=...].")
     parser.add_argument("--lsf-env-script", default="~/start_nnunetv2.sh", help="Shell script sourced before worker startup in LSF mode.")
-    parser.add_argument("--log-level", default="INFO", help="Manager log verbosity level.")
+    parser.add_argument("--log-level", default="INFO", help="Manager log verbosity level (INFO is quiet; INFO_VERBOSE includes per-task assign/success logs).")
     return parser
 
 
@@ -1097,7 +1098,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        level=resolve_log_level(args.log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
 
