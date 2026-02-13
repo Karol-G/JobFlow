@@ -57,7 +57,7 @@ class ManagerDashboard:
         self._started_ts: Optional[float] = None
         self._live = Live(self._render({}, {}, {}, False, 0), console=self.console, screen=True, auto_refresh=False)
         self._started = False
-        self._orig_handlers: list[logging.Handler] = []
+        self._removed_handlers: list[logging.Handler] = []
         self._root_logger: Optional[logging.Logger] = None
 
     def start(self) -> None:
@@ -65,9 +65,13 @@ class ManagerDashboard:
             return
         root = logging.getLogger()
         self._root_logger = root
-        self._orig_handlers = list(root.handlers)
+        self._removed_handlers = []
         for handler in list(root.handlers):
+            # Keep file handlers attached so logs continue to stream to disk.
+            if isinstance(handler, logging.FileHandler):
+                continue
             root.removeHandler(handler)
+            self._removed_handlers.append(handler)
         root.addHandler(self._log_handler)
 
         try:
@@ -75,10 +79,10 @@ class ManagerDashboard:
             self._live.start()
         except Exception:
             root.removeHandler(self._log_handler)
-            for handler in self._orig_handlers:
+            for handler in self._removed_handlers:
                 root.addHandler(handler)
             self._root_logger = None
-            self._orig_handlers = []
+            self._removed_handlers = []
             raise
         self._started = True
 
@@ -89,8 +93,10 @@ class ManagerDashboard:
         self._live.stop()
         if self._root_logger is not None:
             self._root_logger.removeHandler(self._log_handler)
-            for handler in self._orig_handlers:
-                self._root_logger.addHandler(handler)
+            for handler in self._removed_handlers:
+                if handler not in self._root_logger.handlers:
+                    self._root_logger.addHandler(handler)
+        self._removed_handlers = []
         self._started = False
 
     def update(

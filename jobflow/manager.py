@@ -32,6 +32,7 @@ class Manager:
     def __init__(self, args: argparse.Namespace, telemetry_publisher: Optional[TelemetryPublisher] = None) -> None:
         self._normalize_args(args)
         self._apply_log_level(args.log_level)
+        self._ensure_file_logging(Path(args.db_path))
         self.args = args
         self.store = Store(Path(args.db_path))
         recovery = self.store.recover_after_manager_restart()
@@ -68,6 +69,22 @@ class Manager:
     def _apply_log_level(self, raw_level: str) -> None:
         level = getattr(logging, str(raw_level).upper(), logging.INFO)
         logging.getLogger().setLevel(level)
+
+    def _ensure_file_logging(self, db_path: Path) -> None:
+        root = logging.getLogger()
+        log_path = db_path.expanduser().resolve().with_suffix(".log")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        target = str(log_path)
+
+        for handler in root.handlers:
+            if isinstance(handler, logging.FileHandler):
+                existing = getattr(handler, "baseFilename", None)
+                if existing and str(existing) == target:
+                    return
+
+        handler = logging.FileHandler(target, mode="a", encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s"))
+        root.addHandler(handler)
 
     def _normalize_args(self, args: argparse.Namespace) -> None:
         if not hasattr(args, "dashboard"):
@@ -794,36 +811,36 @@ def _parse_json_dict(raw: str) -> dict:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="JobFlow manager process")
-    parser.add_argument("--mode", "-m", choices=["zmq", "fs"], default="fs")
-    parser.add_argument("--dashboard", choices=["auto", "on", "off"], default="auto")
-    parser.add_argument("--dashboard-refresh", type=float, default=0.5)
-    parser.add_argument("--dashboard-log-lines", type=int, default=500)
-    parser.add_argument("--telemetry-mode", choices=["off", "file"], default="off")
-    parser.add_argument("--telemetry-file", default=None)
-    parser.add_argument("--telemetry-queue-size", type=int, default=2)
-    parser.add_argument("--bind-host", default="0.0.0.0")
-    parser.add_argument("--port", "-p", type=int, default=5555)
-    parser.add_argument("--manager-host", default=None)
-    parser.add_argument("--shared-dir", "-s", default=None)
-    parser.add_argument("--session-id", default="jobflow-session")
-    parser.add_argument("--lease-duration", "-l", type=int, default=1800)
-    parser.add_argument("--heartbeat-interval", "-i", type=int, default=10)
-    parser.add_argument("--worker-timeout", "-t", type=int, default=60)
-    parser.add_argument("--shutdown-grace-period", type=int, default=60)
-    parser.add_argument("--worker-manager-timeout-minutes", type=float, default=3.0)
-    parser.add_argument("--db-path", "-d", default="jobflow_manager.db")
-    parser.add_argument("--program", "-P", required=True)
-    parser.add_argument("--program-args", "-A", default="{}")
-    parser.add_argument("--launcher", choices=["none", "multiprocess", "lsf", "slurm"], default="multiprocess")
-    parser.add_argument("--launch-stale-timeout", type=int, default=21600)
-    parser.add_argument("--launch-poll-interval", type=int, default=30)
-    parser.add_argument("--workers", type=int, default=10)
-    parser.add_argument("--lsf-queue", default="long")
-    parser.add_argument("--lsf-nproc", type=int, default=10)
-    parser.add_argument("--lsf-mem", default="20GB")
-    parser.add_argument("--lsf-env-script", default="~/start_nnunetv2.sh")
-    parser.add_argument("--log-level", default="INFO")
+    parser = argparse.ArgumentParser(description="JobFlow manager process", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--mode", "-m", choices=["zmq", "fs"], default="fs", help="Transport mode for manager/worker communication.")
+    parser.add_argument("--dashboard", choices=["auto", "on", "off"], default="auto", help="In-process live dashboard mode.")
+    parser.add_argument("--dashboard-refresh", type=float, default=0.5, help="Dashboard refresh interval in seconds.")
+    parser.add_argument("--dashboard-log-lines", type=int, default=500, help="Max manager log lines retained by in-process dashboard.")
+    parser.add_argument("--telemetry-mode", choices=["off", "file"], default="off", help="Manager telemetry publisher mode.")
+    parser.add_argument("--telemetry-file", default=None, help="Telemetry snapshot file path when --telemetry-mode file.")
+    parser.add_argument("--telemetry-queue-size", type=int, default=2, help="Bounded telemetry publish queue size.")
+    parser.add_argument("--bind-host", default="0.0.0.0", help="Host/interface address the manager binds to.")
+    parser.add_argument("--port", "-p", type=int, default=5555, help="Manager listening port.")
+    parser.add_argument("--manager-host", default=None, help="Reachable manager host/IP advertised to launched workers in ZMQ mode.")
+    parser.add_argument("--shared-dir", "-s", default=None, help="Shared filesystem root used by fs transport mode.")
+    parser.add_argument("--session-id", default="jobflow-session", help="Session namespace used in fs transport mode.")
+    parser.add_argument("--lease-duration", "-l", type=int, default=1800, help="Task lease duration in seconds.")
+    parser.add_argument("--heartbeat-interval", "-i", type=int, default=10, help="Worker heartbeat interval in seconds.")
+    parser.add_argument("--worker-timeout", "-t", type=int, default=240, help="Worker offline timeout in seconds.")
+    parser.add_argument("--shutdown-grace-period", type=int, default=60, help="Seconds to wait for worker shutdown acknowledgements.")
+    parser.add_argument("--worker-manager-timeout-minutes", type=float, default=3.0, help="Manager liveness timeout passed to workers in launched commands.")
+    parser.add_argument("--db-path", "-d", default="jobflow_manager.db", help="SQLite manager database path.")
+    parser.add_argument("--program", "-P", required=True, help="TaskProgram reference: module:ClassName or path.py:ClassName.")
+    parser.add_argument("--program-args", "-A", default="{}", help="JSON object passed to TaskProgram constructor.")
+    parser.add_argument("--launcher", choices=["none", "multiprocess", "lsf", "slurm"], default="multiprocess", help="Worker launcher backend.")
+    parser.add_argument("--launch-stale-timeout", type=int, default=21600, help="Seconds before unresolved launch is marked STALE.")
+    parser.add_argument("--launch-poll-interval", type=int, default=30, help="Launcher state poll interval in seconds.")
+    parser.add_argument("--workers", type=int, default=10, help="Target worker pool size maintained by manager.")
+    parser.add_argument("--lsf-queue", default="medium", help="LSF queue name for submitted workers.")
+    parser.add_argument("--lsf-nproc", type=int, default=1, help="LSF worker CPU slot request (-n).")
+    parser.add_argument("--lsf-mem", default="20GB", help="LSF memory request used in rusage[mem=...].")
+    parser.add_argument("--lsf-env-script", default="~/start_nnunetv2.sh", help="Shell script sourced before worker startup in LSF mode.")
+    parser.add_argument("--log-level", default="INFO", help="Manager log verbosity level.")
     return parser
 
 

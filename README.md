@@ -155,6 +155,7 @@ Manager can maintain a target worker pool:
 - `--worker-manager-timeout-minutes MINUTES` forwarded to launched workers.
 - `--dashboard {auto|on|off}` live full-screen manager dashboard (auto enables on TTY).
 - `--dashboard-refresh SECONDS` and `--dashboard-log-lines N` tune dashboard updates/log buffer.
+- Manager logs are always written live to `<db-path>.log` (next to the SQLite DB).
 - `--telemetry-mode {off|file}` enables manager snapshot publishing for external observers.
 - `--telemetry-file PATH` output JSON snapshot path (auto-derived when omitted in file mode).
 - `--telemetry-queue-size N` bounded publish queue length; oldest snapshots are dropped first.
