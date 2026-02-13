@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .dashboard import ManagerDashboard, RICH_AVAILABLE
 from .launcher.base import Launcher
 from .launcher.lsf import LsfLauncher
 from .launcher.multiprocess import MultiprocessLauncher
@@ -56,9 +55,8 @@ class Manager:
         self._pending_shutdown_acks: set[str] = set()
         self._shutdown_launches_canceled = False
         self._last_shutdown_broadcast_ts = 0.0
-        self._last_dashboard_refresh_ts = 0.0
-        self.dashboard: Optional[ManagerDashboard] = self._make_dashboard(args)
-        self.dashboard_refresh_s = float(args.dashboard_refresh)
+        self._last_telemetry_refresh_ts = 0.0
+        self.telemetry_refresh_s = max(0.1, float(args.telemetry_refresh))
         self.telemetry_publisher: TelemetryPublisher = telemetry_publisher or self._make_telemetry_publisher(args)
         self._telemetry_publisher_failed = False
         self._manual_shutdown_requested = False
@@ -87,18 +85,14 @@ class Manager:
         root.addHandler(handler)
 
     def _normalize_args(self, args: argparse.Namespace) -> None:
-        if not hasattr(args, "dashboard"):
-            args.dashboard = "auto"
-        if not hasattr(args, "dashboard_refresh"):
-            args.dashboard_refresh = 0.5
-        if not hasattr(args, "dashboard_log_lines"):
-            args.dashboard_log_lines = 500
         if not hasattr(args, "telemetry_mode"):
             args.telemetry_mode = "off"
         if not hasattr(args, "telemetry_file"):
             args.telemetry_file = None
         if not hasattr(args, "telemetry_queue_size"):
             args.telemetry_queue_size = 2
+        if not hasattr(args, "telemetry_refresh"):
+            args.telemetry_refresh = 0.5
         if args.mode == "fs":
             if not args.shared_dir:
                 args.shared_dir = str(Path.cwd())
@@ -137,28 +131,6 @@ class Manager:
             return SlurmLauncher()
         raise ValueError(f"Unsupported launcher: {mode}")
 
-    def _make_dashboard(self, args: argparse.Namespace) -> Optional[ManagerDashboard]:
-        mode = args.dashboard
-        if mode not in {"auto", "on", "off"}:
-            raise ValueError("--dashboard must be one of: auto, on, off")
-        if mode == "off":
-            return None
-
-        tty_ok = bool(sys.stdout.isatty() and sys.stderr.isatty())
-        if mode == "auto" and not tty_ok:
-            return None
-        if not RICH_AVAILABLE:
-            if mode == "on":
-                raise RuntimeError("Dashboard requested but 'rich' is not installed.")
-            return None
-        if mode == "on" and not tty_ok:
-            raise RuntimeError("Dashboard requires an interactive TTY.")
-
-        return ManagerDashboard(
-            refresh_s=float(args.dashboard_refresh),
-            log_lines=int(args.dashboard_log_lines),
-        )
-
     def _make_telemetry_publisher(self, args: argparse.Namespace) -> TelemetryPublisher:
         if args.telemetry_mode == "off":
             return NoopTelemetryPublisher()
@@ -173,7 +145,7 @@ class Manager:
         program_args = _parse_json_dict(self.args.program_args)
         program = load_program(self.args.program, program_args)
         logger.info("Starting task generation with program=%s", self.args.program)
-        self._refresh_dashboard(force=True)
+        self._refresh_observers(force=True)
 
         raw_tasks = program.generate_tasks()
         if isinstance(raw_tasks, list):
@@ -200,8 +172,8 @@ class Manager:
             spec_mismatch += status["spec_mismatch"]
             terminal_exists += status["terminal_exists"]
             now = time.time()
-            if now - last_ui_refresh_ts >= self.dashboard_refresh_s:
-                self._refresh_dashboard(now=now, force=True)
+            if now - last_ui_refresh_ts >= self.telemetry_refresh_s:
+                self._refresh_observers(now=now, force=True)
                 last_ui_refresh_ts = now
 
         counts = self.store.task_counts()
@@ -213,7 +185,7 @@ class Manager:
             terminal_exists,
             counts,
         )
-        self._refresh_dashboard(force=True)
+        self._refresh_observers(force=True)
 
     def _submit_workers(self, count: int) -> None:
         if not self.launcher or count <= 0:
@@ -252,7 +224,7 @@ class Manager:
                     rec.state.value,
                 )
             remaining -= this_batch
-            self._refresh_dashboard(force=True)
+            self._refresh_observers(force=True)
 
     def _has_remaining_tasks(self) -> bool:
         counts = self.store.task_counts()
@@ -318,12 +290,10 @@ class Manager:
 
     def run(self) -> dict[str, int]:
         try:
-            if self.dashboard:
-                self.dashboard.start()
-            self._refresh_dashboard(force=True)
+            self._refresh_observers(force=True)
             self.bootstrap_tasks()
             self._reconcile_worker_pool()
-            self._refresh_dashboard(force=True)
+            self._refresh_observers(force=True)
 
             while self.running:
                 for msg in self.transport.poll(0.5):
@@ -333,15 +303,13 @@ class Manager:
                 if now - self._last_tick >= 1.0:
                     self._timer_tick(now)
                     self._last_tick = now
-                self._refresh_dashboard(now=now)
+                self._refresh_observers(now=now)
 
             summary = self.store.task_counts()
-            self._refresh_dashboard(force=True)
+            self._refresh_observers(force=True)
             logger.info("Manager exiting with task summary: %s", summary)
             return summary
         finally:
-            if self.dashboard:
-                self.dashboard.stop()
             try:
                 self.telemetry_publisher.close()
             except Exception:
@@ -349,25 +317,16 @@ class Manager:
             self.transport.close()
             self.store.close()
 
-    def _refresh_dashboard(self, *, now: Optional[float] = None, force: bool = False) -> None:
-        if self.dashboard is None and isinstance(self.telemetry_publisher, NoopTelemetryPublisher):
+    def _refresh_observers(self, *, now: Optional[float] = None, force: bool = False) -> None:
+        if isinstance(self.telemetry_publisher, NoopTelemetryPublisher):
             return
         ts = now if now is not None else time.time()
-        if not force and ts - self._last_dashboard_refresh_ts < self.dashboard_refresh_s:
+        if not force and ts - self._last_telemetry_refresh_ts < self.telemetry_refresh_s:
             return
-        self._last_dashboard_refresh_ts = ts
+        self._last_telemetry_refresh_ts = ts
         task_counts = self.store.task_counts()
         worker_counts = self.store.worker_counts()
         launch_counts = self.store.launch_counts()
-
-        if self.dashboard is not None:
-            self.dashboard.update(
-                task_counts=task_counts,
-                worker_counts=worker_counts,
-                launch_counts=launch_counts,
-                shutdown_started=self._shutdown_started,
-                pending_shutdown_acks=len(self._pending_shutdown_acks),
-            )
 
         snapshot = TelemetrySnapshot(
             ts=ts,
@@ -813,12 +772,10 @@ def _parse_json_dict(raw: str) -> dict:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="JobFlow manager process", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--mode", "-m", choices=["zmq", "fs"], default="fs", help="Transport mode for manager/worker communication.")
-    parser.add_argument("--dashboard", choices=["auto", "on", "off"], default="auto", help="In-process live dashboard mode.")
-    parser.add_argument("--dashboard-refresh", type=float, default=0.5, help="Dashboard refresh interval in seconds.")
-    parser.add_argument("--dashboard-log-lines", type=int, default=500, help="Max manager log lines retained by in-process dashboard.")
     parser.add_argument("--telemetry-mode", choices=["off", "file"], default="off", help="Manager telemetry publisher mode.")
     parser.add_argument("--telemetry-file", default=None, help="Telemetry snapshot file path when --telemetry-mode file.")
     parser.add_argument("--telemetry-queue-size", type=int, default=2, help="Bounded telemetry publish queue size.")
+    parser.add_argument("--telemetry-refresh", type=float, default=0.5, help="Telemetry snapshot publish interval in seconds.")
     parser.add_argument("--bind-host", default="0.0.0.0", help="Host/interface address the manager binds to.")
     parser.add_argument("--port", "-p", type=int, default=5555, help="Manager listening port.")
     parser.add_argument("--manager-host", default=None, help="Reachable manager host/IP advertised to launched workers in ZMQ mode.")

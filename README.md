@@ -16,7 +16,7 @@ Requirements
 ------------
 - Python 3.10+
 - Optional: `pyzmq` for `--mode zmq`
-- Optional: `rich` for live manager dashboard (`--dashboard auto|on|off`)
+- Optional: `rich` for external dashboard subscriber (`jobflow.dashboard_subscriber`)
 - Install optional dashboard dependency with: `pip install .[dashboard]`
 
 Project modules
@@ -153,12 +153,11 @@ Manager can maintain a target worker pool:
   - `--lsf-env-script` (default `~/start_nnunetv2.sh`): prepends `. <script>;` before the worker command in `bash -c`.
 - `--shutdown-grace-period SECONDS` for worker shutdown handshake before forced cancel.
 - `--worker-manager-timeout-minutes MINUTES` forwarded to launched workers.
-- `--dashboard {auto|on|off}` live full-screen manager dashboard (auto enables on TTY).
-- `--dashboard-refresh SECONDS` and `--dashboard-log-lines N` tune dashboard updates/log buffer.
 - Manager logs are always written live to `<db-path>.log` (next to the SQLite DB).
 - `--telemetry-mode {off|file}` enables manager snapshot publishing for external observers.
 - `--telemetry-file PATH` output JSON snapshot path (auto-derived when omitted in file mode).
 - `--telemetry-queue-size N` bounded publish queue length; oldest snapshots are dropped first.
+- `--telemetry-refresh SECONDS` telemetry snapshot publish interval.
 
 External dashboard subscriber (separate process)
 ------------------------------------------------
@@ -201,7 +200,7 @@ Notes:
 - Use `jobflow-manager` when you want manager-only behavior.
 - Wrapper arguments are parsed first (`--external-dashboard`, `--external-dashboard-refresh`, `--external-dashboard-stale-timeout`, `--supervisor-log-level`).
 - All remaining arguments are forwarded to `jobflow.manager`.
-- When external dashboard is enabled, wrapper forces manager `--dashboard off` and `--telemetry-mode file`.
+- When external dashboard is enabled, wrapper forces manager telemetry on (`--telemetry-mode file` and `--telemetry-file`).
 - In interactive TTY mode, press `q` in the supervisor terminal to request graceful manager/worker shutdown.
 
 Implementation notes
@@ -212,4 +211,4 @@ Implementation notes
 - Lease expiration triggers requeue until retries are exhausted.
 - Manager shutdown flow: detect terminal tasks, send `Shutdown`, wait for `ShutdownAck` or timeout, then cancel remaining launches as fallback.
 - Manager restart recovery: assumes workers offline at startup, re-queues in-flight tasks, clears leases, and marks unresolved launches stale.
-- Dashboard mode: full-screen view with color progress bar, worker/task stats, and live manager log tail.
+- External dashboard: full-screen subscriber view with color progress bar, worker/task stats, and live manager log tail.

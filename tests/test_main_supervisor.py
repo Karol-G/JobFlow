@@ -39,7 +39,7 @@ def test_build_manager_cmd_appends_external_dashboard_overrides() -> None:
         telemetry_file="/tmp/snapshot.json",
     )
     assert cmd[1:3] == ["-m", "jobflow.manager"]
-    assert "--dashboard" in cmd
+    assert "--dashboard" not in cmd
     assert "--telemetry-mode" in cmd
     assert "--telemetry-file" in cmd
     assert cmd[-1] == "/tmp/snapshot.json"

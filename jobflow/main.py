@@ -146,8 +146,6 @@ def _build_manager_cmd(manager_argv: list[str], use_external_dashboard: bool, te
         # Keep manager control-plane independent from UI rendering.
         cmd.extend(
             [
-                "--dashboard",
-                "off",
                 "--telemetry-mode",
                 "file",
                 "--telemetry-file",
