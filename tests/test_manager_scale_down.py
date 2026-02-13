@@ -1,15 +1,32 @@
 import argparse
 
 from jobflow.manager import Manager
-from jobflow.models import LaunchState, WorkerState
+from jobflow.models import WorkerState
 
 
 class _FakeLauncher:
-    def __init__(self) -> None:
-        self.canceled: list[str] = []
+    pass
 
-    def cancel(self, batch_job_id: str) -> None:
-        self.canceled.append(str(batch_job_id))
+
+class _FakeLauncherService:
+    def __init__(self) -> None:
+        self.commands: list[dict] = []
+        self._next_id = 1
+
+    def enqueue(self, *, kind: str, payload: dict, priority: int, timeout_s: float, max_retries: int) -> int:
+        command_id = self._next_id
+        self._next_id += 1
+        self.commands.append(
+            {
+                "command_id": command_id,
+                "kind": kind,
+                "payload": payload,
+                "priority": priority,
+                "timeout_s": timeout_s,
+                "max_retries": max_retries,
+            }
+        )
+        return command_id
 
 
 class _FakeStore:
@@ -28,7 +45,6 @@ class _FakeStore:
         self._workers = workers
         self._pending_launch_rows = pending_launch_rows
         self.worker_state_updates: list[tuple[str, WorkerState, str | None]] = []
-        self.launch_state_updates: list[tuple[str, LaunchState]] = []
 
     def count_non_offline_workers(self) -> int:
         return self._non_offline_workers
@@ -42,9 +58,6 @@ class _FakeStore:
     def list_pending_launches_for_scale_down(self, limit: int) -> list[dict]:
         return self._pending_launch_rows[:limit]
 
-    def mark_launch_state(self, launch_id: str, state: LaunchState) -> None:
-        self.launch_state_updates.append((launch_id, state))
-
     def list_non_offline_workers(self) -> list[dict]:
         return list(self._workers)
 
@@ -56,9 +69,17 @@ def _build_test_manager(store: _FakeStore, launcher: _FakeLauncher, *, target_wo
     manager = Manager.__new__(Manager)
     manager.store = store
     manager.launcher = launcher
-    manager.args = argparse.Namespace(workers=target_workers)
+    manager.launcher_service = _FakeLauncherService()
+    manager.args = argparse.Namespace(
+        workers=target_workers,
+        launcher_command_timeout=5.0,
+        launcher_command_retries=1,
+    )
     manager._shutdown_started = False
     manager._has_remaining_tasks = lambda: True
+    manager._pending_submit_capacity = 0
+    manager._cancel_launches_inflight = set()
+    manager._launcher_cmd_context = {}
 
     sent_messages: list[tuple[str, str, dict]] = []
     submitted_counts: list[int] = []
@@ -85,7 +106,6 @@ def test_reconcile_scales_down_idle_first_and_skips_draining_workers() -> None:
     manager._reconcile_worker_pool()
 
     assert submitted_counts == []
-    assert launcher.canceled == []
     assert store.worker_state_updates == [("w-idle", WorkerState.DRAINING, None)]
     assert sent_messages == [("w-idle", "Shutdown", {"graceful": True})]
 
@@ -109,8 +129,8 @@ def test_reconcile_cancels_pending_launches_before_draining_workers() -> None:
     manager._reconcile_worker_pool()
 
     assert submitted_counts == []
-    assert launcher.canceled == ["1001", "1002"]
-    assert store.launch_state_updates == [("l1", LaunchState.CANCELED), ("l2", LaunchState.CANCELED)]
+    assert len(manager.launcher_service.commands) == 2
+    assert [c["kind"] for c in manager.launcher_service.commands] == ["cancel", "cancel"]
+    assert [c["payload"]["batch_job_id"] for c in manager.launcher_service.commands] == ["1001", "1002"]
     assert store.worker_state_updates == []
     assert sent_messages == []
-

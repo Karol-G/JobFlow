@@ -16,6 +16,13 @@ from typing import Optional
 from .launcher.base import Launcher
 from .launcher.lsf import LsfLauncher
 from .launcher.multiprocess import MultiprocessLauncher
+from .launcher.service import (
+    PRIORITY_CANCEL,
+    PRIORITY_POLL,
+    PRIORITY_SUBMIT,
+    LauncherResult,
+    LauncherService,
+)
 from .launcher.slurm import SlurmLauncher
 from .messages import make_envelope, validate_type_for_direction
 from .models import LaunchState, TaskState, WorkerState
@@ -43,6 +50,7 @@ class Manager:
         self.scheduler = FifoScheduler()
         self.transport = self._make_transport(args)
         self.launcher = self._make_launcher(args.launcher)
+        self.launcher_service: Optional[LauncherService] = self._make_launcher_service(args, self.launcher)
         self.running = True
 
         self.lease_duration_s = int(args.lease_duration)
@@ -53,6 +61,10 @@ class Manager:
 
         self._last_tick = time.time()
         self._last_launch_poll = 0.0
+        self._poll_inflight = False
+        self._launcher_cmd_context: dict[int, dict] = {}
+        self._pending_submit_capacity = 0
+        self._cancel_launches_inflight: set[str] = set()
         self._shutdown_started = False
         self._shutdown_deadline_ts: Optional[float] = None
         self._pending_shutdown_acks: set[str] = set()
@@ -96,6 +108,16 @@ class Manager:
             args.telemetry_queue_size = 2
         if not hasattr(args, "telemetry_refresh"):
             args.telemetry_refresh = 0.5
+        if not hasattr(args, "launcher_cmd_queue_size"):
+            args.launcher_cmd_queue_size = 512
+        if not hasattr(args, "launcher_result_queue_size"):
+            args.launcher_result_queue_size = 1024
+        if not hasattr(args, "launcher_command_timeout"):
+            args.launcher_command_timeout = 30.0
+        if not hasattr(args, "launcher_command_retries"):
+            args.launcher_command_retries = 1
+        if not hasattr(args, "launcher_service_shutdown_timeout"):
+            args.launcher_service_shutdown_timeout = 5.0
         if args.mode == "fs":
             if not args.shared_dir:
                 args.shared_dir = str(Path.cwd())
@@ -143,6 +165,15 @@ class Manager:
         if mode == "slurm":
             return SlurmLauncher()
         raise ValueError(f"Unsupported launcher: {mode}")
+
+    def _make_launcher_service(self, args: argparse.Namespace, launcher: Optional[Launcher]) -> Optional[LauncherService]:
+        if launcher is None:
+            return None
+        return LauncherService(
+            launcher,
+            command_queue_size=int(args.launcher_cmd_queue_size),
+            result_queue_size=int(args.launcher_result_queue_size),
+        )
 
     def _make_telemetry_publisher(self, args: argparse.Namespace) -> TelemetryPublisher:
         if args.telemetry_mode == "off":
@@ -201,7 +232,7 @@ class Manager:
         self._refresh_observers(force=True)
 
     def _submit_workers(self, count: int) -> None:
-        if not self.launcher or count <= 0:
+        if not self.launcher_service or count <= 0:
             return
 
         worker_command = self._build_worker_command()
@@ -220,24 +251,114 @@ class Manager:
         remaining = int(count)
         while remaining > 0:
             this_batch = min(batch_size, remaining)
-            records = self.launcher.submit_workers(this_batch, worker_command, env, requested)
-            for rec in records:
+            cmd_id = self.launcher_service.enqueue(
+                kind="submit",
+                payload={
+                    "count": this_batch,
+                    "worker_command": worker_command,
+                    "env": env,
+                    "requested": requested,
+                },
+                priority=PRIORITY_SUBMIT,
+                timeout_s=float(self.args.launcher_command_timeout),
+                max_retries=int(self.args.launcher_command_retries),
+            )
+            if cmd_id is None:
+                logger.warning("Failed enqueuing worker submit command for batch=%s", this_batch)
+                break
+            self._launcher_cmd_context[cmd_id] = {"kind": "submit", "requested": requested, "count": this_batch}
+            self._pending_submit_capacity += this_batch
+            remaining -= this_batch
+        self._refresh_observers(force=True)
+
+    def _drain_launcher_results(self, *, max_items: int = 256) -> None:
+        if self.launcher_service is None:
+            return
+        for result in self.launcher_service.drain_results(max_items=max_items):
+            self._apply_launcher_result(result)
+
+    def _apply_launcher_result(self, result: LauncherResult) -> None:
+        context = self._launcher_cmd_context.pop(result.command_id, {})
+        kind = result.kind
+        if kind == "submit":
+            requested = context.get("requested", {})
+            requested_count = int(context.get("count", 0))
+            self._pending_submit_capacity = max(0, self._pending_submit_capacity - requested_count)
+            if not result.ok:
+                logger.warning(
+                    "Launcher submit command failed attempts=%s timed_out=%s error=%s",
+                    result.attempts,
+                    result.timed_out,
+                    result.error,
+                )
+                return
+            for rec in result.payload.get("records", []):
+                launch_state_raw = rec.get("state", LaunchState.FAILED.value)
+                try:
+                    launch_state = LaunchState(str(launch_state_raw))
+                except ValueError:
+                    launch_state = LaunchState.FAILED
                 self.store.upsert_launch(
-                    rec.launch_id,
-                    system=rec.system,
-                    state=rec.state,
-                    requested=requested,
-                    batch_job_id=rec.batch_job_id,
-                    worker_id_expected=rec.worker_id_expected,
+                    str(rec["launch_id"]),
+                    system=str(rec["system"]),
+                    state=launch_state,
+                    requested=requested if isinstance(requested, dict) else {},
+                    batch_job_id=rec.get("batch_job_id"),
+                    worker_id_expected=rec.get("worker_id_expected"),
                 )
                 logger.info(
                     "Launch submitted launch_id=%s batch_job_id=%s state=%s",
-                    rec.launch_id,
-                    rec.batch_job_id,
-                    rec.state.value,
+                    rec.get("launch_id"),
+                    rec.get("batch_job_id"),
+                    launch_state.value,
                 )
-            remaining -= this_batch
-            self._refresh_observers(force=True)
+            return
+
+        if kind == "poll":
+            self._poll_inflight = False
+            if not result.ok:
+                logger.warning(
+                    "Launcher poll command failed attempts=%s timed_out=%s error=%s",
+                    result.attempts,
+                    result.timed_out,
+                    result.error,
+                )
+                return
+            rows = context.get("rows", [])
+            status_by_job = result.payload.get("status_by_job", {})
+            if not isinstance(status_by_job, dict):
+                return
+            for row in rows:
+                batch_job_id = row.get("batch_job_id")
+                if batch_job_id not in status_by_job:
+                    continue
+                status = status_by_job[batch_job_id]["state"]
+                if status == "PENDING":
+                    self.store.mark_launch_state(row["launch_id"], LaunchState.PENDING)
+                elif status == "RUNNING":
+                    self.store.mark_launch_state(row["launch_id"], LaunchState.RUNNING)
+                elif status == "FAILED":
+                    self.store.mark_launch_state(row["launch_id"], LaunchState.FAILED)
+            return
+
+        if kind == "cancel":
+            launch_id = context.get("launch_id")
+            if isinstance(launch_id, str):
+                self._cancel_launches_inflight.discard(launch_id)
+            if not result.ok:
+                logger.warning(
+                    "Launcher cancel command failed launch_id=%s attempts=%s timed_out=%s error=%s",
+                    launch_id,
+                    result.attempts,
+                    result.timed_out,
+                    result.error,
+                )
+                return
+            if isinstance(launch_id, str):
+                self.store.mark_launch_state(launch_id, LaunchState.CANCELED)
+            return
+
+        logger.warning("Unknown launcher result kind=%s command_id=%s", kind, result.command_id)
 
     def _has_remaining_tasks(self) -> bool:
         counts = self.store.task_counts()
@@ -258,17 +379,18 @@ class Manager:
         worker_counts = self.store.worker_counts()
         draining_workers = int(worker_counts.get(WorkerState.DRAINING.value, 0))
         effective_online_workers = max(0, online_workers - draining_workers)
-        pending_launches = self.store.count_pending_launches()
-        in_pool = effective_online_workers + pending_launches
+        pending_launches = max(0, self.store.count_pending_launches() - len(self._cancel_launches_inflight))
+        in_pool = effective_online_workers + pending_launches + self._pending_submit_capacity
 
         if in_pool > target:
             excess = in_pool - target
             logger.info(
-                "Worker pool above target: target=%s effective_online=%s draining=%s pending_launches=%s; reducing by %s",
+                "Worker pool above target: target=%s effective_online=%s draining=%s pending_launches=%s pending_submit=%s; reducing by %s",
                 target,
                 effective_online_workers,
                 draining_workers,
                 pending_launches,
+                self._pending_submit_capacity,
                 excess,
             )
             self._scale_down_pool(excess)
@@ -283,11 +405,12 @@ class Manager:
         if missing <= 0:
             return
         logger.info(
-            "Worker pool below target: target=%s effective_online=%s draining=%s pending_launches=%s; submitting %s workers",
+            "Worker pool below target: target=%s effective_online=%s draining=%s pending_launches=%s pending_submit=%s; submitting %s workers",
             target,
             effective_online_workers,
             draining_workers,
             pending_launches,
+            self._pending_submit_capacity,
             missing,
         )
         self._submit_workers(missing)
@@ -323,26 +446,39 @@ class Manager:
             )
 
     def _cancel_pending_launches_for_scale_down(self, max_cancel: int) -> int:
-        if self.launcher is None:
+        if self.launcher_service is None:
             return 0
         remaining = max(0, int(max_cancel))
         if remaining <= 0:
             return 0
 
-        canceled = 0
+        enqueued = 0
         for row in self.store.list_pending_launches_for_scale_down(remaining):
             batch_job_id = row["batch_job_id"]
             if not batch_job_id:
                 continue
             launch_id = row["launch_id"]
-            try:
-                self.launcher.cancel(str(batch_job_id))
-                self.store.mark_launch_state(launch_id, LaunchState.CANCELED)
-                canceled += 1
-                logger.info("Canceled pending launch for scale-down: launch_id=%s batch_job_id=%s", launch_id, batch_job_id)
-            except Exception:
-                logger.exception("Failed canceling pending launch during scale-down: launch_id=%s batch_job_id=%s", launch_id, batch_job_id)
-        return canceled
+            if launch_id in self._cancel_launches_inflight:
+                continue
+            cmd_id = self.launcher_service.enqueue(
+                kind="cancel",
+                payload={"batch_job_id": str(batch_job_id)},
+                priority=PRIORITY_CANCEL,
+                timeout_s=float(self.args.launcher_command_timeout),
+                max_retries=int(self.args.launcher_command_retries),
+            )
+            if cmd_id is None:
+                logger.warning(
+                    "Failed enqueuing cancel command during scale-down: launch_id=%s batch_job_id=%s",
+                    launch_id,
+                    batch_job_id,
+                )
+                continue
+            self._cancel_launches_inflight.add(launch_id)
+            self._launcher_cmd_context[cmd_id] = {"kind": "cancel", "launch_id": launch_id, "batch_job_id": str(batch_job_id)}
+            enqueued += 1
+            logger.info("Requested launch cancel for scale-down: launch_id=%s batch_job_id=%s", launch_id, batch_job_id)
+        return enqueued
 
     def _build_worker_command(self) -> list[str]:
         cmd = [
@@ -373,14 +509,18 @@ class Manager:
 
     def run(self) -> dict[str, int]:
         try:
+            if self.launcher_service is not None:
+                self.launcher_service.start()
             self._refresh_observers(force=True)
             self.bootstrap_tasks()
             self._reconcile_worker_pool()
             self._refresh_observers(force=True)
 
             while self.running:
+                self._drain_launcher_results(max_items=256)
                 for msg in self.transport.poll(0.5):
                     self._handle_incoming(msg)
+                self._drain_launcher_results(max_items=256)
 
                 now = time.time()
                 if now - self._last_tick >= 1.0:
@@ -388,11 +528,16 @@ class Manager:
                     self._last_tick = now
                 self._refresh_observers(now=now)
 
+            # Best-effort flush of pending launcher results before final summary.
+            self._drain_launcher_results(max_items=1024)
             summary = self.store.task_counts()
             self._refresh_observers(force=True)
             logger.info("Manager exiting with task summary: %s", summary)
             return summary
         finally:
+            if self.launcher_service is not None:
+                self.launcher_service.stop(timeout_s=float(self.args.launcher_service_shutdown_timeout))
+                self._drain_launcher_results(max_items=2048)
             try:
                 self.telemetry_publisher.close()
             except Exception:
@@ -540,7 +685,8 @@ class Manager:
         if not self._pending_shutdown_acks:
             logger.info("All workers shutdown acknowledged or offline.")
             self._force_cancel_remaining_launches()
-            self.running = False
+            if not self._cancel_launches_inflight:
+                self.running = False
             return
 
         if now - self._last_shutdown_broadcast_ts >= 2.0:
@@ -552,13 +698,14 @@ class Manager:
                 len(self._pending_shutdown_acks),
             )
             self._force_cancel_remaining_launches()
-            self.running = False
+            if not self._cancel_launches_inflight:
+                self.running = False
 
     def _force_cancel_remaining_launches(self) -> None:
         if self._shutdown_launches_canceled:
             return
         self._shutdown_launches_canceled = True
-        if self.launcher is None:
+        if self.launcher_service is None:
             return
 
         for row in self.store.list_launches_for_cancel():
@@ -566,28 +713,43 @@ class Manager:
             if not batch_job_id:
                 continue
             launch_id = row["launch_id"]
-            try:
-                self.launcher.cancel(str(batch_job_id))
-                self.store.mark_launch_state(launch_id, LaunchState.CANCELED)
-            except Exception:
-                logger.exception("Failed canceling launched worker batch_job_id=%s launch_id=%s", batch_job_id, launch_id)
+            if launch_id in self._cancel_launches_inflight:
+                continue
+            cmd_id = self.launcher_service.enqueue(
+                kind="cancel",
+                payload={"batch_job_id": str(batch_job_id)},
+                priority=PRIORITY_CANCEL,
+                timeout_s=float(self.args.launcher_command_timeout),
+                max_retries=int(self.args.launcher_command_retries),
+            )
+            if cmd_id is None:
+                logger.warning(
+                    "Failed enqueuing cancel command at shutdown batch_job_id=%s launch_id=%s",
+                    batch_job_id,
+                    launch_id,
+                )
+                continue
+            self._cancel_launches_inflight.add(launch_id)
+            self._launcher_cmd_context[cmd_id] = {"kind": "cancel", "launch_id": launch_id, "batch_job_id": str(batch_job_id)}
 
     def _tick_launchers(self, now: float) -> None:
-        if self.launcher and now - self._last_launch_poll >= self.args.launch_poll_interval:
+        if self.launcher_service and (not self._poll_inflight) and now - self._last_launch_poll >= self.args.launch_poll_interval:
             rows = self.store.list_launches_for_poll()
-            ids = [r["batch_job_id"] for r in rows if r["batch_job_id"]]
-            status_by_job = self.launcher.poll(ids)
-            for row in rows:
-                batch_job_id = row["batch_job_id"]
-                if batch_job_id not in status_by_job:
-                    continue
-                status = status_by_job[batch_job_id]["state"]
-                if status == "PENDING":
-                    self.store.mark_launch_state(row["launch_id"], LaunchState.PENDING)
-                elif status == "RUNNING":
-                    self.store.mark_launch_state(row["launch_id"], LaunchState.RUNNING)
-                elif status == "FAILED":
-                    self.store.mark_launch_state(row["launch_id"], LaunchState.FAILED)
+            row_snapshots = [{"launch_id": r["launch_id"], "batch_job_id": r["batch_job_id"]} for r in rows if r["batch_job_id"]]
+            ids = [r["batch_job_id"] for r in row_snapshots]
+            if ids:
+                cmd_id = self.launcher_service.enqueue(
+                    kind="poll",
+                    payload={"batch_job_ids": ids},
+                    priority=PRIORITY_POLL,
+                    timeout_s=float(self.args.launcher_command_timeout),
+                    max_retries=int(self.args.launcher_command_retries),
+                )
+                if cmd_id is not None:
+                    self._launcher_cmd_context[cmd_id] = {"kind": "poll", "rows": row_snapshots}
+                    self._poll_inflight = True
+                else:
+                    logger.warning("Failed enqueuing launcher poll command; manager loop continues.")
             self._last_launch_poll = now
 
         stale_after = float(self.args.launch_stale_timeout)
@@ -917,6 +1079,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--launcher", choices=["none", "multiprocess", "lsf", "slurm"], default="multiprocess", help="Worker launcher backend.")
     parser.add_argument("--launch-stale-timeout", type=int, default=21600, help="Seconds before unresolved launch is marked STALE.")
     parser.add_argument("--launch-poll-interval", type=int, default=240, help="Launcher state poll interval in seconds.")
+    parser.add_argument("--launcher-cmd-queue-size", type=int, default=512, help="Bounded launcher actor command queue size.")
+    parser.add_argument("--launcher-result-queue-size", type=int, default=1024, help="Bounded launcher actor result queue size.")
+    parser.add_argument("--launcher-command-timeout", type=float, default=30.0, help="Per launcher command timeout in seconds.")
+    parser.add_argument("--launcher-command-retries", type=int, default=1, help="Retry count for timed-out/failed launcher commands.")
+    parser.add_argument("--launcher-service-shutdown-timeout", type=float, default=5.0, help="Seconds to wait for launcher actor to stop.")
     parser.add_argument("--workers", type=int, default=10, help="Target worker pool size maintained by manager.")
     parser.add_argument("--lsf-queue", default="medium", help="LSF queue name for submitted workers.")
     parser.add_argument("--lsf-nproc", type=int, default=1, help="LSF worker CPU slot request (-n).")
